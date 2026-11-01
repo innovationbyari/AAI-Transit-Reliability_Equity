@@ -1,0 +1,8 @@
+# Everything the notebook installs in SETUP 1, for running it locally in Jupyter instead of Colab.
+-r requirements.txt
+gradio>=5.0
+transformers
+sentencepiece
+torch
+torchvision
+jupyter

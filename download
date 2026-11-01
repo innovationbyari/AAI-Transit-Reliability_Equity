@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Run outputs (regenerated on every run; exported zips can be large)
+transit_outputs/
+ollama.log
+
+# Secrets: never commit API keys
+.streamlit/secrets.toml
+.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
