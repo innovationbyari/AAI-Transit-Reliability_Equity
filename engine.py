@@ -9,11 +9,11 @@ import os as _os
 import matplotlib as _matplotlib
 _matplotlib.use("Agg")                     # no screen on a server: figures render off-screen
 _os.environ.setdefault("MPLBACKEND", "Agg")
-from transit_ai._ipython_shim import display, HTML, Markdown, clear_output  # noqa: F401
+from _ipython_shim import display, HTML, Markdown, clear_output  # noqa: F401
 
 
 # ====================================================================================================
-# notebook cell 5: SETUP 3 · Live LLM client (OpenAI by default → OpenRouter → Hugging Face → templates)
+# notebook cell 6: SETUP 3 · Live LLM client (OpenAI by default → OpenRouter → Hugging Face → templates)
 # ====================================================================================================
 #@title SETUP 3 · Live LLM client (OpenAI by default → OpenRouter → Hugging Face → templates)
 import os, json, requests
@@ -70,7 +70,7 @@ CATALOG = {
 
 
 def read_secret(name):
-    """Colab Secrets first, then Streamlit secrets (Streamlit Community Cloud), then environment variables."""
+    """Colab Secrets first, then environment variables."""
     try:
         from google.colab import userdata
         v = userdata.get(name)
@@ -78,14 +78,12 @@ def read_secret(name):
             return v.strip()
     except Exception:
         pass
-    try:
-        import streamlit as _st
-        v = _st.secrets.get(name)
-        if v:
-            return str(v).strip()
-    except Exception:
-        pass
     return (os.getenv(name) or "").strip()
+
+
+_hf_key = read_secret("HF_API_KEY") or read_secret("HF_TOKEN")
+if _hf_key:
+    os.environ.setdefault("HF_TOKEN", _hf_key)          # lets the FLAN-T5 download in A2 authenticate too
 
 
 def _provider_entry(name, model_override=""):
@@ -140,14 +138,14 @@ def _call_one(p, messages, temperature, max_tokens, schema):
     for attempt in range(3):
         try:
             r = requests.post(p["url"], headers=headers, json=payload, timeout=p["timeout"])
-            if r.status_code == 429 and "insufficient_quota" in r.text:
-                raise LLMUnavailable("quota exhausted (HTTP 429 insufficient_quota); add credit or billing for this key")
             if r.status_code in (429, 500, 502, 503, 504):
                 last_error = f"HTTP {r.status_code}"
                 time.sleep(2 * (attempt + 1))
                 continue
             if r.status_code in (401, 403):
                 raise LLMUnavailable(f"auth failed (HTTP {r.status_code}); check {CATALOG[p['provider']]['key_name']}")
+            if r.status_code == 429 and "insufficient_quota" in r.text:
+                raise LLMUnavailable("quota exhausted (HTTP 429 insufficient_quota); add credit or billing for this key")
             if r.status_code in (400, 404, 415, 422) and "response_format" in payload and LLM["struct_mode"] == "auto":
                 p["native_ok"] = False
                 payload.pop("response_format")
@@ -296,7 +294,7 @@ if LLM_READY:
 
 
 # ====================================================================================================
-# notebook cell 7: E1 · Imports, runtime settings and helpers
+# notebook cell 8: E1 · Imports, runtime settings and helpers
 # ====================================================================================================
 #@title E1 · Imports, runtime settings and helpers
 import json, math, random, zlib, copy, threading, io, zipfile, os, html as _html, statistics
@@ -320,6 +318,10 @@ SERVICE_AREA_LATLON = (40.7347, -74.1642)
 CITY_CENTER = SERVICE_AREA_LATLON
 # 1.0 = real review deadlines (5/10/20 min). Set e.g. 0.1 to make deadlines 10x shorter for demos.
 DEMO_DEADLINE_SCALE = 1.0  #@param {type:"number"}
+# Every timestamp the notebook shows or saves is in this time zone (EST/EDT for New Jersey).
+LOCAL_TZ_NAME = "America/New_York"  #@param {type:"string"}
+from zoneinfo import ZoneInfo
+LOCAL_TZ = ZoneInfo(LOCAL_TZ_NAME)
 OUTPUT_DIR = "transit_outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -329,11 +331,22 @@ def utcnow():
 
 
 def iso(dt):
-    return dt.isoformat(timespec="seconds")
+    """ISO time in the local zone, e.g. 2026-11-02T01:41:00-05:00 (the offset shows EST or EDT)."""
+    return dt.astimezone(LOCAL_TZ).isoformat(timespec="seconds")
+
+
+def local_now():
+    return utcnow().astimezone(LOCAL_TZ)
+
+
+def local_label(dt=None):
+    """Readable local time with its zone name, e.g. '2026-11-02 01:41 EST'."""
+    return (dt or utcnow()).astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M %Z")
 
 
 def parse_iso(s):
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def r3(x):
@@ -360,7 +373,7 @@ def n_cost(x, L, U):
     return None if v is None else 1.0 - v
 
 # ====================================================================================================
-# notebook cell 8: E1 · Policy rules (flowchart section 4) — versioned assumptions
+# notebook cell 9: E1 · Policy rules (flowchart section 4) — versioned assumptions
 # ====================================================================================================
 #@title E1 · Policy rules (flowchart section 4) — versioned assumptions
 DEFAULT_POLICY = {
@@ -508,7 +521,7 @@ class PolicyManager:
                             [{"path": "*", "old": self.current["version"], "new": f"rules of {to_version}"}])
 
 # ====================================================================================================
-# notebook cell 9: E1 · Synthetic transit network (routes, stops, community areas, essential destinations, depots)
+# notebook cell 10: E1 · Synthetic transit network (routes, stops, community areas, essential destinations, depots)
 # ====================================================================================================
 #@title E1 · Synthetic transit network (routes, stops, community areas, essential destinations, depots)
 KM_LAT = 110.574
@@ -622,7 +635,7 @@ print(f"Synthetic network: {len(NET['routes'])} routes, {len(NET['stops'])} stop
       f"{len(NET['destinations'])} essential destinations, {len(NET['depots'])} depots")
 
 # ====================================================================================================
-# notebook cell 11: E1 · Scenario builder and preset incidents (synthetic data inputs)
+# notebook cell 12: E1 · Scenario builder and preset incidents (synthetic data inputs)
 # ====================================================================================================
 #@title E1 · Scenario builder and preset incidents (synthetic data inputs)
 SPEC_DEFAULTS = dict(
@@ -783,7 +796,7 @@ PRESETS = {
 print(f"{len(PRESETS)} preset scenarios ready")
 
 # ====================================================================================================
-# notebook cell 13: CV · Computer vision passenger counting (pretrained person detector → anonymized counts)
+# notebook cell 14: CV · Computer vision passenger counting (pretrained person detector → anonymized counts)
 # ====================================================================================================
 #@title CV · Computer vision passenger counting (pretrained person detector → anonymized counts)
 USE_CV = True  #@param {type:"boolean"}
@@ -974,7 +987,7 @@ _ = CV_RESULTS.pop("previews", None)   # pixelated previews are display-only and
 
 
 # ====================================================================================================
-# notebook cell 15: A1 · Live data connectors: NJ Transit GTFS-realtime, US Census ACS, National Weather Service
+# notebook cell 16: A1 · Live data connectors: NJ Transit GTFS-realtime, US Census ACS, National Weather Service
 # ====================================================================================================
 #@title A1 · Live data connectors: NJ Transit GTFS-realtime, US Census ACS, National Weather Service
 DATA_MODE = "live"  #@param ["live", "sample"]
@@ -989,10 +1002,10 @@ LIVE = DATA_MODE == "live"
 
 
 def _ago(seconds):
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    return iso(datetime.now(timezone.utc) - timedelta(seconds=seconds))
 
 
-# NJ Transit GTFS / GTFS-realtime
+# ---------------------------------------------------------------- NJ Transit GTFS / GTFS-realtime
 # Login: form post → {"Authenticated": "True", "UserToken": ...}. Data calls send the token as a multipart form field
 # and return GTFS-realtime protobuf (trip updates, vehicle positions, alerts). The token is kept in memory only.
 NJT_BASE = "https://pcsdata.njtransit.com/api/{system}/"
@@ -1091,7 +1104,7 @@ def fetch_njt_service():
     return out
 
 
-# US Census ACS (tract-level equity inputs)
+# ---------------------------------------------------------------- US Census ACS (tract-level equity inputs)
 ACS_DETAILED = {"B08201_001E": "households", "B08201_002E": "households_no_vehicle",
                 "B08301_001E": "workers", "B08301_010E": "workers_public_transit", "B19013_001E": "median_household_income"}
 ACS_SUBJECT = {"S1701_C03_001E": "poverty_rate_pct", "S1810_C03_001E": "disability_rate_pct"}
@@ -1163,7 +1176,7 @@ def fetch_census(lat, lon):
     return res
 
 
-# National Weather Service (7 connectors)
+# ---------------------------------------------------------------- National Weather Service (7 connectors)
 NWS_BASE = "https://api.weather.gov"
 
 
@@ -1238,12 +1251,12 @@ if _n.get("service"):
 print(f"US Census ACS: {_c['status']}" + (f" · {_c['tract_name']} · zero-vehicle {_c['zero_vehicle_share']}, "
       f"poverty {_c['poverty_rate']}, disability {_c['disability_rate']}, transit commute {_c['transit_commute_share']}"
       if _c.get("tract") else ""))
-print(f"NWS weather: {_w.get('source')} · {_w.get('current_conditions')} · active alerts: {len(_w.get('active_alerts', []))} · "
+print(f"NWS weather: {_w.get('source')} · {_w.get('current_conditions') or 'conditions not reported'} · active alerts: {len(_w.get('active_alerts', []))} · "
       f"connectors ok: {sum(r['status'] == 'ok' for r in _w.get('connectors', []))}/{len(_w.get('connectors', []))}")
 
 
 # ====================================================================================================
-# notebook cell 16: A2 · Data inputs (live where available, sample otherwise) + small language model + hand-off to the Signal Scout
+# notebook cell 17: A2 · Data inputs (live where available, sample otherwise) + small language model + hand-off to the Signal Scout
 # ====================================================================================================
 #@title A2 · Data inputs (live where available, sample otherwise) + small language model + hand-off to the Signal Scout
 USE_SLM = True  #@param {type:"boolean"}
@@ -1269,7 +1282,7 @@ def section_a_sample_inputs():
                    "delay_min": delay, "cancelled": bool(svc_live["cancelled"]), "trip_id": svc_live["trip_id"],
                    "vehicle_position": f"{svc_live['lat']:.5f},{svc_live['lon']:.5f} ({svc_live['distance_km']} km from Newark Penn)",
                    "source": f"NJ Transit {_NJT['system']} GTFS-realtime (live)",
-                   "observed_at": datetime.fromtimestamp(svc_live["timestamp"], timezone.utc).isoformat(timespec="seconds")
+                   "observed_at": iso(datetime.fromtimestamp(svc_live["timestamp"], timezone.utc))
                    if svc_live.get("timestamp") else _ago(0)}
     else:
         service = {"route": "NJ-001", "scheduled_headway_min": 15, "delay_min": 18, "cancelled": False,
@@ -1288,7 +1301,7 @@ def section_a_sample_inputs():
         events = {"source_type": "official_alert", "report_source": "sample_data", "source": "sample_data", "road_closure": True,
                   "report": "Route NJ-001 has an 18 minute delay near Newark Penn Station due to a road closure."}
     w_live = w.get("source") == "NWS live"
-    events.update(weather=(w.get("current_conditions") or "Unknown") if w_live else "Clear",
+    events.update(weather=(w.get("current_conditions") or "not reported") if w_live else "Clear",
                   weather_alerts=w.get("active_alerts", []) if w_live else [],
                   weather_source="NWS live" if w_live else "sample_data", observed_at=_ago(90) if not alert else _ago(0))
     if w_live:
@@ -1351,11 +1364,11 @@ def collate_inputs(data):
     collated_at = datetime.now(timezone.utc)
     for source_name, source_data in data.items():
         observed = source_data.get("observed_at")
-        age_s = int((collated_at - datetime.fromisoformat(observed)).total_seconds()) if observed else None
+        age_s = int((collated_at - parse_iso(observed)).total_seconds()) if observed else None
         combined.append({
             "source": source_name,
-            "timestamp": observed or collated_at.isoformat(),
-            "collated_at": collated_at.isoformat(timespec="seconds"),
+            "timestamp": observed or iso(collated_at),
+            "collated_at": iso(collated_at),
             "age_s": age_s,
             "data": source_data,
             "status": "unverified",
@@ -1416,22 +1429,15 @@ def interpret_event(report):
 
 # 4. CREATE STRUCTURED EVENT FIELDS (deterministic; numbers never come from a language model)
 # broader delay patterns
-_NUM = r"(\d+(?:\.\d+)?)"
-_MIN = r"(?:minutes?|mins?)\b"
-_QUAL = r"(?:up\s+to|about|around|approximately|roughly|nearly)?\s*"
-_RANGE = r"\s*(?:to|-|–)\s*"
 DELAY_PATTERNS = [
-    # ranges ("delays of 10 to 15 minutes", "10-15 min late"): the upper bound is used (worst stated case)
-    rf"delay(?:ed|s)?\s*(?:of|by)?\s*{_QUAL}{_NUM}{_RANGE}{_NUM}\s*{_MIN}",
-    rf"{_NUM}{_RANGE}{_NUM}\s*{_MIN}\s*(?:delay|late|behind)",
-    # single values ("18 minutes late", "6 minute delay", "8 minutes behind schedule", "delayed by 9 minutes", "delays of up to 30 minutes")
-    rf"{_NUM}\s*-?\s*{_MIN}\s*(?:delay|late|behind)",
-    rf"delay(?:ed|s)?\s*(?:of|by)?\s*{_QUAL}{_NUM}\s*{_MIN}",
+    # a range ("10 to 15 minutes") reports the upper end
+    r"(\d+(?:\.\d+)?)\s*(?:to|-|–)\s*(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)",
+    r"(\d+(?:\.\d+)?)\s*-?\s*(?:minutes?|mins?)\s*(?:delay|late|behind)",
+    r"delay(?:ed|s)?\s*(?:of|by)?\s*(?:up to|about|around|approximately)?\s*(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)",
 ]
 CAUSE_KEYWORDS = {
     "road_closure": ["road closure", "closed road", "road closed", "detour"],
-    "weather": ["snow", "snowfall", "blizzard", "ice", "icy", "freezing rain", "storm", "flood", "flooding", "flooded",
-                "weather", "heavy rain"],
+    "weather": ["snow", "ice", "icy", "storm", "flood", "weather", "heavy rain"],
     "obstruction": ["crash", "collision", "accident", "blocked", "obstruction", "disabled vehicle"],
     "mechanical": ["mechanical", "breakdown", "operator shortage", "vehicle failure"],
     "medical": ["medical", "sick passenger"],
@@ -1450,8 +1456,8 @@ def extract_delay(text):
 def classify_cause(text):
     t = text.lower()
     for cause, kws in CAUSE_KEYWORDS.items():
-        # whole words only: a substring match read "ice" inside "service" and labelled a clear night as weather
-        if any(re.search(rf"\b{re.escape(k)}\b", t) for k in kws):
+        # a keyword must START a word ("flood" matches "flooding"), so "ice" inside "service" is not weather
+        if any(re.search(rf"\b{re.escape(k)}\w*", t) for k in kws):
             return cause
     return "none"
 
@@ -1518,7 +1524,7 @@ def build_signal_scout_input(inputs):
     return {
         "case_status": "new",
         "status": "awaiting_verification",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": iso(utcnow()),
         "route": route,
         "event": structured_event,
         "all_inputs": collated_data,
@@ -1563,7 +1569,7 @@ print("JSON file saved:", os.path.join(OUTPUT_DIR, "signal_scout_input.json"))
 
 
 # ====================================================================================================
-# notebook cell 17: A · INTEGRATION — adapter from Section A's hand-off to the shared raw bundle
+# notebook cell 18: A · INTEGRATION — adapter from Section A's hand-off to the shared raw bundle
 # ====================================================================================================
 #@title A · INTEGRATION — adapter from Section A's hand-off to the shared raw bundle
 # Routes that are not in the synthetic network are drawn on a stand-in route; A's own values are kept.
@@ -1683,7 +1689,7 @@ print("Section A hand-off converted:", _raw_a["scenario_name"], "| time period:"
       "| weather:", _raw_a["weather_context"]["source"], _raw_a["weather_context"]["conditions"])
 
 # ====================================================================================================
-# notebook cell 19: E2 · Deterministic validation, exception paths and scoring engine (Signal Scout → verification → confidence → impact → planner → evaluator)
+# notebook cell 20: E2 · Deterministic validation, exception paths and scoring engine (Signal Scout → verification → confidence → impact → planner → evaluator)
 # ====================================================================================================
 #@title E2 · Deterministic validation, exception paths and scoring engine (Signal Scout → verification → confidence → impact → planner → evaluator)
 APPROVED_TOOLS = {"vision_agent", "data_verification", "feed_outage_path", "conflicting_data_path", "confidence_calculation",
@@ -1803,7 +1809,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
          "ranking": [], "missing": [], "tier": None, "conflict": None, "outage": None}
     sc.step("Signal Scout", "case opened", f"Route {raw['route_id']} · {len(raw.get('observations', []))} observations · tools restricted to approved list")
 
-    # Data verification
+    # ---- Data verification
     evidence = sc.invoke("data_verification", verify_observations, raw, policy)
     sc.step("Data verification", f"{sum(e['status'] == 'accepted' for e in evidence)} accepted / {len(evidence)}",
             "; ".join(f"{e['source_id']}: {e['status']}" for e in evidence))
@@ -1811,7 +1817,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
         if e["note"].startswith("Uncorroborated"):
             sc.exception("SOCIAL REPORT", "data_verification", f"{e['source_id']} excluded: requires corroboration", "excluded")
 
-    # Vision agent (retry once with same inputs, then deterministic safe mode)
+    # ---- Vision agent (retry once with same inputs, then deterministic safe mode)
     try:
         vis = sc.invoke("vision_agent", vision_agent, raw, retry=True)
         evidence.append({"source_id": f"VISION-{raw['route_id']}", "source_type": "vehicle_apc", "timestamp": raw["generated_at"],
@@ -1827,7 +1833,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
         A.update(evidence=evidence, trace=sc.trace, exceptions=sc.exceptions, alerts=sc.alerts)
         return A
 
-    # Feed outage path
+    # ---- Feed outage path
     vehicle = [e for e in evidence if e["source_type"] == "vehicle_apc" and not e["source_id"].startswith("VISION-")]
     if vehicle and all(e["status"] == "stale" for e in vehicle):
         oldest = max(e["age_s"] for e in vehicle)
@@ -1846,7 +1852,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
             sc.exception("FEED OUTAGE", "feed_outage_path", f"Snapshot frozen at age {oldest} s; no backup source", "monitoring only")
             sc.step("Feed outage path", "backup check: NO", "Freshness limit exceeded → monitoring only")
 
-    # Conflicting data path
+    # ---- Conflicting data path
     acc_delay = sorted([e for e in evidence if e["status"] == "accepted" and "delay_min" in e["fields"]],
                        key=lambda e: precedence_rank(policy, e["source_type"]))
     conflict_rows = []
@@ -1878,7 +1884,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
                          "flagged for operator review")
             sc.alert("operator", "Conflicting data quarantined; operator review required")
 
-    # Resolve fields + context
+    # ---- Resolve fields + context
     fields, origin, acc = resolve_fields(evidence, policy)
     for k, src in [("transit_dependence", "community"), ("income_disadvantage", "community"), ("disability", "community")]:
         if raw.get("community", {}).get(k) is not None:
@@ -1900,13 +1906,13 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
     A["fields"], A["field_origin"] = fields, origin
     A["missing"] = [f for f in REQUIRED_FIELDS if fields.get(f) is None]
 
-    # Data ready?
+    # ---- Data ready?
     feed_available = len([e for e in acc if not e["source_id"].startswith("VISION-")]) > 0
     ready = feed_available and not unresolved_conflict
     sc.step("Data ready?", "YES" if ready else "NO",
             f"feed available={feed_available}, agent healthy=True, unresolved conflict={unresolved_conflict}")
 
-    # Confidence C = 0.40Q + 0.25F + 0.20G + 0.15M
+    # ---- Confidence C = 0.40Q + 0.25F + 0.20G + 0.15M
     def confidence(include_quarantined):
         pool = [e for e in evidence if e["status"] == "accepted" or (include_quarantined and e["status"] == "quarantined")]
         pool_nv = [e for e in pool if not e["source_id"].startswith("VISION-")]
@@ -1926,7 +1932,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
     conf = sc.invoke("confidence_calculation", confidence, unresolved_conflict)
     A["confidence"] = conf
 
-    # Hard triggers (from accepted evidence only)
+    # ---- Hard triggers (from accepted evidence only)
     ht = policy["hard_trigger"]
     lk = policy["lookups"]
     trig = []
@@ -1947,13 +1953,13 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
     A["hard_triggers"] = [{"trigger": t, "source": s, "official": s in policy["official_sources"]} for t, s in trig]
     A["official_hard_trigger"] = any(t["official"] for t in A["hard_triggers"])
 
-    # Impact analyzer (always computed so monitoring cases record priority)
+    # ---- Impact analyzer (always computed so monitoring cases record priority)
     if feed_available:
         A["scores"], A["normalization"] = sc.invoke("impact_analyzer", impact_scores, fields, raw, policy)
     sig = bool(A["hard_triggers"]) or (A["scores"] is not None and A["scores"]["R"] >= policy["significance_R"])
     A["significant"] = sig
 
-    # Gates (flowchart order)
+    # ---- Gates (flowchart order)
     if A["outage"] == "no_backup" and not feed_available:
         A.update(gate="MONITORING", gate_reason="Feed outage with no backup; freshness limit exceeded → monitoring only")
     elif not feed_available:
@@ -1979,7 +1985,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
         sc.step("Deterministic impact analyzer", "scored", f"R={A['scores']['R']:.3f} V={A['scores']['V']:.3f} A={A['scores']['A']:.3f} P={A['scores']['P']:.3f}")
     sc.step("Significance rules", "SIGNIFICANT" if sig else "not significant", A["gate_reason"] if A["gate"] in ("SIGNIFICANT", "BELOW_THRESHOLD") else "")
 
-    # Severity tier for deadline control
+    # ---- Severity tier for deadline control
     if A["scores"]:
         P = A["scores"]["P"]
         ts = policy["severity_tiers"]
@@ -1990,7 +1996,7 @@ def run_analysis(raw, policy, operator_resolution=None, constraints=None):
         else:
             A["tier"] = "moderate"
 
-    # Planner Copilot + Scenario Evaluator (significant cases only)
+    # ---- Planner Copilot + Scenario Evaluator (significant cases only)
     if A["gate"] == "SIGNIFICANT":
         cons = {**policy["planner_defaults"], **(constraints or {})}
         opts = sc.invoke("planner_copilot", planner_copilot, fields, raw, A["scores"], policy, cons)
@@ -2167,7 +2173,7 @@ def scenario_evaluator(feasible_opts, C, P, policy):
     return out
 
 # ====================================================================================================
-# notebook cell 21: C · Structured outputs (schemas)
+# notebook cell 22: C · Structured outputs (schemas)
 # ====================================================================================================
 #@title C · Structured outputs (schemas)
 class Official(BaseModel):
@@ -2213,13 +2219,13 @@ class AgentStep(BaseModel):                         # what the agent says on eve
 print("✓ Section C schemas defined")
 
 # ====================================================================================================
-# notebook cell 22: C · The tools (plain Python rule engine)
+# notebook cell 23: C · The tools (plain Python rule engine)
 # ====================================================================================================
 #@title C · The tools (plain Python rule engine)
 ETH_REQUIRED = ["conflicts", "transparency", "procurement", "data_protection"]
 ETH_REFRESH_DAYS = 365
 ETH_WARNING_DAYS = 30
-ETH_TODAY = date.today()          # change to date(2026, 1, 1) etc. to test a specific reference date
+ETH_TODAY = local_now().date()          # change to date(2026, 1, 1) etc. to test a specific reference date
 
 ETH_ROSTER: List[Official] = []   # filled with load_eth_roster(); never rebound (tools read this list)
 
@@ -2288,7 +2294,7 @@ def load_eth_roster(rows):
 print("✓ Section C tools ready:", ", ".join(ETH_TOOLS))
 
 # ====================================================================================================
-# notebook cell 23: C · The single agent (think → act → observe loop) and guardrail
+# notebook cell 24: C · The single agent (think → act → observe loop) and guardrail
 # ====================================================================================================
 #@title C · The single agent (think → act → observe loop) and guardrail
 ETH_TRACE = []
@@ -2319,6 +2325,7 @@ class ComplianceAgent:
         if not ETH_ROSTER:                                   # never answer about an empty roster
             raise ValueError("The roster is empty — load it with load_eth_roster() first.")
         ETH_TRACE.clear()
+        seen_calls = set()
         messages = [{"role": "system", "content": self.system},
                     {"role": "user", "content": f"Question: {question}\nToday's date: {ETH_TODAY.isoformat()}"}]
         for step in range(1, ETH_MAX_STEPS + 1):
@@ -2337,7 +2344,12 @@ class ComplianceAgent:
                 fn = ETH_TOOLS.get(s.tool or "")
                 if fn is None:
                     result = {"error": f"unknown tool '{s.tool}'", "available": list(ETH_TOOLS)}
+                elif (s.tool, json.dumps(s.args, sort_keys=True)) in seen_calls:
+                    # a repeated call adds nothing: point the model back to the result it already has
+                    result = {"note": f"You already called {s.tool} with these arguments; its result is above. Do not call "
+                                      "tools again. Reply now with action \"final\" and the full report."}
                 else:
+                    seen_calls.add((s.tool, json.dumps(s.args, sort_keys=True)))
                     try:
                         result = fn[0](**s.args)
                     except TypeError as e:
@@ -2421,7 +2433,7 @@ ETH_WORKFLOW = [("in", "Roster +\nQuestion", "input"), ("agent", "Compliance\nAg
 print("✓ Section C agent + guardrail ready")
 
 # ====================================================================================================
-# notebook cell 24: C · Rosters: transit review team (used by the governance gate) + the Section C sample rosters
+# notebook cell 25: C · Rosters: transit review team (used by the governance gate) + the Section C sample rosters
 # ====================================================================================================
 #@title C · Rosters: transit review team (used by the governance gate) + the Section C sample rosters
 def days_ago(n):
@@ -2474,7 +2486,7 @@ display_df = pd.DataFrame(eth_check_all())
 print(display_df[["official", "department", "status", "missing_courses", "days_until_refresher_due"]].to_string(index=False))
 
 # ====================================================================================================
-# notebook cell 25: C · Run the agent (optional; needs the LLM) — the guardrail corrects any disagreement with the rules
+# notebook cell 26: C · Run the agent (optional; needs the LLM) — the guardrail corrects any disagreement with the rules
 # ====================================================================================================
 #@title C · Run the agent (optional; needs the LLM) — the guardrail corrects any disagreement with the rules
 RUN_SECTION_C_AGENT = True  #@param {type:"boolean"}
@@ -2493,7 +2505,7 @@ else:
     print("Section C agent not run: it needs RUN_SECTION_C_AGENT and an LLM key in Colab Secrets. The rule engine above is what the gate uses.")
 
 # ====================================================================================================
-# notebook cell 27: D · Structured outputs (the "contract" between agents)
+# notebook cell 28: D · Structured outputs (the "contract" between agents)
 # ====================================================================================================
 #@title D · Structured outputs (the "contract" between agents)
 HOLDING_KINDS = ["direct_stock", "business_ownership", "family_business", "donation_received",
@@ -2558,7 +2570,7 @@ class FinalReport(BaseModel):                          # Agent 5 output
 print("✓ Section D schemas defined:", ", ".join(c.__name__ for c in [ExtractedFacts, AnalystOutput, ReviewerOutput, FinalReport]))
 
 # ====================================================================================================
-# notebook cell 28: D · The agents, the rule-screener tool, and the orchestrator
+# notebook cell 29: D · The agents, the rule-screener tool, and the orchestrator
 # ====================================================================================================
 #@title D · The agents, the rule-screener tool, and the orchestrator
 COI_TRACE = []
@@ -2629,7 +2641,7 @@ coi_decider = COIAgent("Decision Agent",
     FinalReport)
 
 
-# the deterministic tool
+# ---------- the deterministic tool ----------
 COI_SECTORS = {
     "technology": ["tech", "software", "semiconductor", "cloud", "cyber", "antitrust", "artificial intelligence", "data privacy"],
     "healthcare_pharma": ["pharma", "drug", "health", "medical", "biotech", "prescription", "medicare"],
@@ -2689,7 +2701,7 @@ def rule_screen(facts, decisions=None, threshold=None):
     return {"hits": hits, "rule_score": top, "threshold": threshold, "over_threshold": top >= threshold}
 
 
-# the orchestrator
+# ---------- the orchestrator ----------
 def coi_run_pipeline(case_text, verbose=True):
     COI_TRACE.clear()
     facts = coi_extractor.run(f"CASE FILE:\n{case_text}", verbose)
@@ -2721,7 +2733,11 @@ def coi_guardrail(result):
 def coi_enforce(result):
     """GUARDRAIL: when the consistency check fails, the stricter recommendation wins (a person still decides)."""
     issues, final = coi_guardrail(result), result["final"]
-    if not issues:
+    rule = float(result["screen"].get("rule_score") or 0)
+    if final.risk_score < rule:                     # the stated risk is never below the deterministic rule score
+        final = final.model_copy(update={"risk_score": rule})
+        issues = issues + [f"risk raised to the rule screener's {rule}"]
+    if not any("ESCALATE" in i or "CLEAR" in i for i in issues):
         return final, issues
     new = "ESCALATE" if any("ESCALATE" in i for i in issues) else "REVIEW"
     return final.model_copy(update={"recommendation": new,
@@ -2735,7 +2751,7 @@ COI_WORKFLOW = [("case", "Case file", "input"), ("Extractor Agent", "1 Extractor
 print("✓ Section D: 4 agents + 1 tool + orchestrator ready")
 
 # ====================================================================================================
-# notebook cell 29: D · Disclosures: transit staff (used by the gate) + the Section D sample cases
+# notebook cell 30: D · Disclosures: transit staff (used by the gate) + the Section D sample cases
 # ====================================================================================================
 #@title D · Disclosures: transit staff (used by the gate) + the Section D sample cases
 COI_SAMPLES = {
@@ -2811,7 +2827,7 @@ for _who in ["Gabe Ortiz", "Chen Wei", "Ana Lopez"]:
 print("Section D samples (stock vote, spouse contract) flagged by the screener:", rule_screen(_alvarez)["over_threshold"], rule_screen(_nair)["over_threshold"])
 
 # ====================================================================================================
-# notebook cell 30: D · Run the multi-agent pipeline (optional; needs the LLM)
+# notebook cell 31: D · Run the multi-agent pipeline (optional; needs the LLM)
 # ====================================================================================================
 #@title D · Run the multi-agent pipeline (optional; needs the LLM)
 RUN_SECTION_D_PIPELINE = True  #@param {type:"boolean"}
@@ -2830,7 +2846,7 @@ else:
     print("Section D pipeline not run: it needs RUN_SECTION_D_PIPELINE and an LLM key in Colab Secrets. The rule screener above is what the gate uses.")
 
 # ====================================================================================================
-# notebook cell 32: INTEGRATION · governance_check(): ethics-training gate (C) + conflict-of-interest gate (D)
+# notebook cell 33: INTEGRATION · governance_check(): ethics-training gate (C) + conflict-of-interest gate (D)
 # ====================================================================================================
 #@title INTEGRATION · governance_check(): ethics-training gate (C) + conflict-of-interest gate (D)
 def decisions_for_option(option):
@@ -2852,7 +2868,7 @@ def governance_check(name, decision, option=None, proposal=None, policy=None):
     problems, notes = [], []
     if not g.get("enabled", True) or not name.strip():
         return problems, notes
-    # Section C: ethics training
+    # ---- Section C: ethics training
     st = eth_check_official(name)
     if "error" in st:
         msg = f"{name} is not on the ethics-training roster"
@@ -2865,7 +2881,7 @@ def governance_check(name, decision, option=None, proposal=None, policy=None):
         notes.append(f"{name}: ethics refresher due in {st['days_until_refresher_due']} days")
     else:
         notes.append(f"{name}: ethics training {st['status']}")
-    # Section D: conflict of interest
+    # ---- Section D: conflict of interest
     if decision in g.get("coi_gate_decisions", []) and (option or proposal):
         disc = STAFF_DISCLOSURES.get(name.strip())
         if disc is None:
@@ -2889,7 +2905,7 @@ def governance_check(name, decision, option=None, proposal=None, policy=None):
 print("✓ Governance gate ready (training: Section C rules · independence: Section D rule screener)")
 
 # ====================================================================================================
-# notebook cell 34: E3 · Shared case state, Explanation Agent (live LLM), human review, deadlines, safe default, implementation
+# notebook cell 35: E3 · Shared case state, Explanation Agent (live LLM), human review, deadlines, safe default, implementation
 # ====================================================================================================
 #@title E3 · Shared case state, Explanation Agent (live LLM), human review, deadlines, safe default, implementation
 REVIEW_STATUSES = ("AWAITING_REVIEW", "AWAITING_SECOND_REVIEW")
@@ -2934,7 +2950,7 @@ def rider_alert_text(case):
     nearby = sorted({r for s in stops for r in NET["stops"][s]["nearby_routes"]})
     if nearby:
         msg += f" Alternatives: route(s) {', '.join(nearby)}."
-    msg += f" Verified by {src['source_id']} at {src['timestamp'][11:16]} UTC. Accessible-service riders can call the paratransit desk."
+    msg += f" Verified by {src['source_id']} at {src['timestamp'][11:16]} ET. Accessible-service riders can call the paratransit desk."
     return msg
 
 
@@ -2951,7 +2967,7 @@ class CaseStore:
         self.proposals, self.proposal_log, self.backtest = [], [], None
         self.insight_narrative = ""
 
-    # audit
+    # ---------- audit
     def log(self, case, actor, role, stage, event, detail=""):
         e = {"ts": iso(utcnow()), "case_id": case["case_id"] if case else "—", "actor": actor, "role": role, "stage": stage,
              "event": event, "detail": detail, "policy_version": case["policy_version"] if case else self.PM.current["version"]}
@@ -2963,7 +2979,7 @@ class CaseStore:
     def active(self):
         return self.cases.get(self.active_id)
 
-    # intake
+    # ---------- intake
     def new_case(self, raw, use_llm=True):
         with self.lock:
             self.counter += 1
@@ -3004,7 +3020,7 @@ class CaseStore:
             self.start_review(case)
         self.last_message = f"{case['case_id']}: {STATUS_HELP.get(case['status'], case['status'])}"
 
-    # exception-path human actions
+    # ---------- exception-path human actions
     def operator_resolve(self, case, operator, resolution):
         if case["status"] != "CONFLICT_REVIEW":
             raise ValueError("This case has no conflict awaiting operator review.")
@@ -3049,7 +3065,7 @@ class CaseStore:
         self.log(case, actor, "planner", "Monitoring", "Closed as false alarm", reason)
         self.last_message = f"{case['case_id']} closed as false alarm."
 
-    # explanation agent
+    # ---------- explanation agent
     def explain(self, case):
         case["explanation"] = {"brief_md": explanation_brief(case), "narrative": "", "narrative_source": "template",
                                "generated_at": iso(utcnow())}
@@ -3060,7 +3076,7 @@ class CaseStore:
                 txt = sc.invoke("explanation_agent", llm_narrative, case, retry=True)
                 case["explanation"].update(narrative=txt, narrative_source=f"live LLM · {llm_source()}")
             except AgentFailure as e:
-                case["explanation"]["narrative_source"] = "template (LLM failed twice → deterministic safe mode)"
+                case["explanation"]["narrative_source"] = "template (LLM narrative failed twice; template used)"
                 self.log(case, "Explanation Agent", "agent", "Agent error path", "Fallback to template", str(e))
                 sc.alert("technical owner", f"Explanation Agent failed twice: {e}")
             for x in sc.exceptions:
@@ -3070,7 +3086,7 @@ class CaseStore:
         self.log(case, "Explanation Agent", "agent", "Explanation", "Options ranking brief published",
                  case["explanation"]["narrative_source"])
 
-    # human review
+    # ---------- human review
     def start_review(self, case, note="Options presented to reviewer"):
         policy = get_case_policy(case)
         tier = case["analysis"]["tier"] or "moderate"
@@ -3226,7 +3242,7 @@ class CaseStore:
                  "Verified rider information sent; monitoring continues; no dispatch, rerouting or live control")
         self.last_message = f"{case['case_id']} → SAFE DEFAULT ({reason})."
 
-    # implementation
+    # ---------- implementation
     def record_implementation(self, case, staff, result, notes):
         if case["status"] != "AWAITING_IMPLEMENTATION":
             raise ValueError("No approved action is awaiting implementation.")
@@ -3245,7 +3261,7 @@ class CaseStore:
             self.start_review(case, "Returned to review after failed/partial implementation")
             self.last_message = "Failed/partial action returned to human review with a new timer."
 
-    # outcome evaluator (separate from the recommender; never changes policy)
+    # ---------- outcome evaluator (separate from the recommender; never changes policy)
     def predicted_for(self, case):
         A = case["analysis"]
         oid = case.get("approved_option_id")
@@ -3272,7 +3288,7 @@ class CaseStore:
                  f"delay err {case['outcome']['delay_error_min']:+.1f} min; false alarm={case['outcome']['false_alarm']}. Policy weights unchanged.")
         self.last_message = f"Outcome evaluated for {case['case_id']}. Policy weights are never changed automatically."
 
-    # reporting
+    # ---------- reporting
     def all_cases(self, include_history=True):
         return (self.history if include_history else []) + list(self.cases.values())
 
@@ -3354,7 +3370,7 @@ def explanation_brief(case):
         L.append("**Incident history (input):** " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in raw["incident_history"].items() if k != "observed_at"))
     if raw.get("slm_interpretation"):
         L.append(f"**Section A SLM reading of the event report (supporting only, not scored):** {_html.escape(str(raw['slm_interpretation']))}")
-    srcs = [f"{e['source_id']} ({e['source_type']}, {e['timestamp'][11:19]} UTC, age {e['age_s']} s)" for e in A["evidence"] if e["status"] == "accepted"]
+    srcs = [f"{e['source_id']} ({e['source_type']}, {e['timestamp'][11:19]} ET, age {e['age_s']} s)" for e in A["evidence"] if e["status"] == "accepted"]
     L.append("**Sources used:** " + "; ".join(srcs))
     if A["ranking"]:
         top = A["ranking"][0]
@@ -3378,6 +3394,11 @@ def template_narrative(case):
             f"This is a recommendation only; the human reviewer decides.")
 
 
+def narrative_names_rank1(text, label):
+    """True when the narrative names the rank-1 option's action, e.g. 'dispatch a second bus' (any capitalisation)."""
+    return label.split(" —")[0].strip().lower() in (text or "").lower()
+
+
 def llm_narrative(case, attempt=1):
     A = case["analysis"]
     rk = A["ranking"]
@@ -3393,12 +3414,12 @@ def llm_narrative(case, attempt=1):
     if not rk:
         return template_narrative(case)
     txt = agent_llm_generate("Facts (JSON):\n" + json.dumps(facts, indent=1), system)
-    if rk[0]["label"].split(" —")[0].lower()[:12] not in txt.lower():
+    if not narrative_names_rank1(txt, rk[0]["label"]):
         raise AgentFailure("Narrative did not name the rank-1 option; discarded by guard")
     return txt
 
 # ====================================================================================================
-# notebook cell 35: E3 · Incident history, Outcome Evaluator metrics, Insight Agent, policy-owner approval, backtest and versioning
+# notebook cell 36: E3 · Incident history, Outcome Evaluator metrics, Insight Agent, policy-owner approval, backtest and versioning
 # ====================================================================================================
 #@title E3 · Incident history, Outcome Evaluator metrics, Insight Agent, policy-owner approval, backtest and versioning
 def random_spec(rng):
@@ -3615,7 +3636,7 @@ seed_history(APP)
 print(f"Seeded {len(APP.history)} historical cases; rules v{PM.current['version']} active.")
 
 # ====================================================================================================
-# notebook cell 38: B · 1. Setup and policy configuration (rules come from the shared PolicyManager)
+# notebook cell 39: B · 1. Setup and policy configuration (rules come from the shared PolicyManager)
 # ====================================================================================================
 #@title B · 1. Setup and policy configuration (rules come from the shared PolicyManager)
 import json
@@ -3626,7 +3647,7 @@ from typing import Optional, Callable
 
 import pandas as pd
 import ipywidgets as widgets
-from transit_ai._ipython_shim import display, HTML
+from _ipython_shim import display, HTML
 
 class PolicyConfigView(dict):
     """Read-only view of the shared versioned policy (APP.PM). Rules change only through Policy Owner Approval."""
@@ -3659,7 +3680,7 @@ RULE_VERSION_HISTORY = [{"version": CONFIG["rule_version"], "changed": "initial"
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).astimezone(LOCAL_TZ)
 
 
 def stamp(dt: Optional[datetime] = None) -> str:
@@ -3669,7 +3690,7 @@ def stamp(dt: Optional[datetime] = None) -> str:
 print("Setup complete. Rule version:", CONFIG["rule_version"])
 
 # ====================================================================================================
-# notebook cell 40: B · 2. Data structures (the Shared Case State contracts)
+# notebook cell 41: B · 2. Data structures (the Shared Case State contracts)
 # ====================================================================================================
 #@title B · 2. Data structures (the Shared Case State contracts)
 @dataclass
@@ -3851,7 +3872,7 @@ REJECTED_PROPOSALS: dict = {} # (parameter, proposed value) -> policy owner's re
 print("Data structures defined.")
 
 # ====================================================================================================
-# notebook cell 42: B · Sample scenario (Route 12 cancellation, Main St crowding, last rail connection)
+# notebook cell 43: B · Sample scenario (Route 12 cancellation, Main St crowding, last rail connection)
 # ====================================================================================================
 #@title B · Sample scenario (Route 12 cancellation, Main St crowding, last rail connection)
 SAMPLE_INPUTS = {
@@ -3899,7 +3920,7 @@ DEMO_OVERRIDES = {
 print("Sample scenario loaded.")
 
 # ====================================================================================================
-# notebook cell 44: B · 3. Validation and metrics functions (deterministic; numbers from the E2 engine)
+# notebook cell 45: B · 3. Validation and metrics functions (deterministic; numbers from the E2 engine)
 # ====================================================================================================
 #@title B · 3. Validation and metrics functions (deterministic; numbers from the E2 engine)
 # Every function keeps the typed contract from B · 2 (inputs → VerificationResult, ImpactScores, ScoredOption, ...).
@@ -3978,7 +3999,7 @@ def _b_analyze(inputs, load_signals, constraints=None, policy=None):
     return raw, run_analysis(raw, policy or APP.PM.current, res, constraints), res
 
 
-# data verification and exception paths
+# ---------------- data verification and exception paths ----------------
 def verify_data(inputs: dict, load_signals: list) -> VerificationResult:
     """Schema, timestamps, refresh, source identity, completeness and agreement → "ready" or the exception path to take."""
     raw, A, _ = _b_analyze(inputs, load_signals)
@@ -4017,7 +4038,7 @@ def handle_conflict(case: Case, verification: VerificationResult) -> bool:
     return True
 
 
-# confidence, hard triggers, impact and scenario ranking
+# ---------------- confidence, hard triggers, impact and scenario ranking ----------------
 def calculate_confidence(inputs: dict, load_signals: list, verification: VerificationResult) -> float:
     """C = 0.40Q + 0.25F + 0.20G + 0.15M (source quality, freshness, agreement, completeness)."""
     _, A, _ = _b_analyze(inputs, load_signals)
@@ -4055,7 +4076,7 @@ def evaluate_scenarios(case: Case, options: list) -> list:
     return scored
 
 
-# outcome evaluation
+# ---------------- outcome evaluation ----------------
 def workflow_option_as_engine_option(case, option_id):
     eng = _B_ENGINE.get(case.case_id)
     if not eng or not option_id:
@@ -4085,7 +4106,7 @@ def evaluate_outcome(case: Case, action_result: Optional[ActionResult]) -> Outco
                          false_alarm=m["false_alarm"])
 
 
-# versioned rule changes (only reached after Policy Owner approval + backtest)
+# ---------------- versioned rule changes (only reached after Policy Owner approval + backtest) ----------------
 def get_rule(path: str):
     return copy.deepcopy(get_path(APP.PM.current, RULE_PATH_ALIASES.get(path, path)))
 
@@ -4136,7 +4157,7 @@ print("Validation and metrics functions ready (deterministic E2 engine) · rules
 
 
 # ====================================================================================================
-# notebook cell 46: B · 4. Agent base class (live LLM notes through the shared client)
+# notebook cell 47: B · 4. Agent base class (live LLM notes through the shared client)
 # ====================================================================================================
 #@title B · 4. Agent base class (live LLM notes through the shared client)
 class Agent:
@@ -4167,7 +4188,7 @@ class Agent:
 
 
 # ====================================================================================================
-# notebook cell 48: B · Vision Agent
+# notebook cell 49: B · Vision Agent
 # ====================================================================================================
 #@title B · Vision Agent
 class VisionAgent(Agent):
@@ -4192,7 +4213,7 @@ class VisionAgent(Agent):
         return signals
 
 # ====================================================================================================
-# notebook cell 50: B · Signal Scout Agent
+# notebook cell 51: B · Signal Scout Agent
 # ====================================================================================================
 #@title B · Signal Scout Agent
 class SignalScoutAgent(Agent):
@@ -4224,7 +4245,7 @@ class SignalScoutAgent(Agent):
         return case
 
 # ====================================================================================================
-# notebook cell 52: B · Planner Copilot Agent
+# notebook cell 53: B · Planner Copilot Agent
 # ====================================================================================================
 #@title B · Planner Copilot Agent
 class PlannerCopilotAgent(Agent):
@@ -4267,7 +4288,7 @@ class PlannerCopilotAgent(Agent):
 
 
 # ====================================================================================================
-# notebook cell 54: B · Explanation Agent
+# notebook cell 55: B · Explanation Agent
 # ====================================================================================================
 #@title B · Explanation Agent
 class ExplanationAgent(Agent):
@@ -4305,7 +4326,7 @@ class ExplanationAgent(Agent):
         )
 
 # ====================================================================================================
-# notebook cell 56: B · Insight Agent
+# notebook cell 57: B · Insight Agent
 # ====================================================================================================
 #@title B · Insight Agent
 class InsightAgent(Agent):
@@ -4349,7 +4370,7 @@ class InsightAgent(Agent):
 print("Agents defined.")
 
 # ====================================================================================================
-# notebook cell 58: B · 5. Rule steps
+# notebook cell 59: B · 5. Rule steps
 # ====================================================================================================
 #@title B · 5. Rule steps
 def passes_confidence_gate(C: float, official_trigger: Optional[str]) -> bool:
@@ -4390,7 +4411,7 @@ def continue_monitoring(case: Case, reason: str) -> dict:
 EXCEPTION_HANDLERS = {"feed_outage": handle_feed_outage, "agent_error": handle_agent_error, "conflict": handle_conflict}
 
 
-# Demo controls for the Section B runner only (see DEMO_OVERRIDES; off by default)
+# ---------- Demo controls for the Section B runner only (see DEMO_OVERRIDES; off by default) ----------
 def demo_verification(v: VerificationResult, attempt: int) -> VerificationResult:
     forced = DEMO_OVERRIDES["verification_status"]
     if forced and attempt == 0:
@@ -4417,7 +4438,7 @@ def demo_impact(i: ImpactScores) -> ImpactScores:
 print("Rules defined.")
 
 # ====================================================================================================
-# notebook cell 60: B · 6. Human in the loop forms (ipywidgets)
+# notebook cell 61: B · 6. Human in the loop forms (ipywidgets)
 # ====================================================================================================
 #@title B · 6. Human in the loop forms (ipywidgets)
 def run_safely(fn, msg_widget):
@@ -4461,7 +4482,7 @@ class ReviewForm:
         self.timeout_w.on_click(run_safely(lambda: self.submit("timeout"), self.msg_w))
 
     def widget(self):
-        deadline = self.case.review_deadline.astimezone().strftime("%H:%M:%S") if self.case.review_deadline else "none"
+        deadline = self.case.review_deadline.astimezone(LOCAL_TZ).strftime("%H:%M:%S %Z") if self.case.review_deadline else "none"
         head = widgets.HTML(f"<h4 style='margin:6px 0'>🟦 {self.role} | case {self.case.case_id} | deadline {deadline}</h4>")
         return widgets.VBox([head, self.name_w, self.option_w, self.decision_w, self.reason_w, self.constraints_w,
                              self.check_w, widgets.HBox([self.submit_w, self.timeout_w]), self.msg_w],
@@ -4617,7 +4638,7 @@ class PolicyOwnerForm:
 print("Human in the loop forms defined.")
 
 # ====================================================================================================
-# notebook cell 62: B · 7. Agent-level runner (Section B's typed agents, Signal Scout coordination)
+# notebook cell 63: B · 7. Agent-level runner (Section B's typed agents, Signal Scout coordination)
 # ====================================================================================================
 #@title B · 7. Agent-level runner (Section B's typed agents, Signal Scout coordination)
 class Workflow:
@@ -4629,7 +4650,7 @@ class Workflow:
         self.active_form = None
         self.out = widgets.Output()
 
-    # display helpers
+    # ---------- display helpers ----------
     def say(self, kind: str, title: str, body: str = ""):
         colors = {"ai": "#DCEFEC", "code": "#FFF3DC", "human": "#DCE3EC", "data": "#EFE9F8", "decision": "#FDE6EC"}
         with self.out:
@@ -4640,7 +4661,7 @@ class Workflow:
         with self.out:
             display(obj)
 
-    # Section 1 and 2: detect and check
+    # ---------- Section 1 and 2: detect and check ----------
     def start(self, parent_case_id: Optional[str] = None):
         display(self.out)
         self.run_detection(parent_case_id)
@@ -4710,7 +4731,7 @@ class Workflow:
             return self.to_safe_default("Below significance threshold")
         self.plan()
 
-    # Section 3: plan and decide
+    # ---------- Section 3: plan and decide ----------
     def plan(self):
         case = self.case
         case.options = self.planner.run(case, self.inputs, case.constraints)
@@ -4781,7 +4802,7 @@ class Workflow:
         self.case.status = "implemented"
         self.learn(ar)
 
-    # Fallbacks
+    # ---------- Fallbacks ----------
     def to_safe_default(self, reason: str):
         msg = safe_default(self.case, reason)
         self.say("code", "Safe Default", f"{reason}<br>Rider message: {msg['rider_message']}")
@@ -4802,7 +4823,7 @@ class Workflow:
         self.raw_feed = updated_feed or self.raw_feed
         self.run_detection(parent_case_id=self.case.case_id)
 
-    # Learn and improve
+    # ---------- Learn and improve ----------
     def learn(self, ar: Optional[ActionResult]):
         case = self.case
         case.outcome = evaluate_outcome(case, ar)
@@ -4854,17 +4875,17 @@ class Workflow:
 print("Workflow defined.")
 
 # ====================================================================================================
-# notebook cell 64: B · 8. Run the agent-level runner (optional)
+# notebook cell 65: B · 8. Run the agent-level runner (optional)
 # ====================================================================================================
 #@title B · 8. Run the agent-level runner (optional)
-RUN_SECTION_B_FORMS = False  #@param {type:"boolean"}
+RUN_SECTION_B_FORMS = True  #@param {type:"boolean"}
 wf = None
 if RUN_SECTION_B_FORMS:
     wf = Workflow(SAMPLE_INPUTS, RAW_SENSOR_FEED, use_llm=LLM_READY)
     wf.start()
 
 # ====================================================================================================
-# notebook cell 66: B · 9. Audit trail and outputs
+# notebook cell 67: B · 9. Audit trail and outputs
 # ====================================================================================================
 #@title B · 9. Audit trail and outputs
 AUDIT_COLUMNS = ["time", "case_id", "stage", "actor_type", "actor", "output", "note", "rule_version"]
@@ -4899,10 +4920,10 @@ else:
     print("No Section B runner case (B · 8 is off). Orchestrator and gallery cases are in Section O, F and the results summary.")
 
 # ====================================================================================================
-# notebook cell 68: B · 10. Scripted run (no clicking)
+# notebook cell 69: B · 10. Scripted run (no clicking)
 # ====================================================================================================
 #@title B · 10. Scripted run (no clicking)
-RUN_SCRIPTED_TEST = False  #@param {type:"boolean"}
+RUN_SCRIPTED_TEST = True  #@param {type:"boolean"}
 
 if RUN_SCRIPTED_TEST:
     t = Workflow(SAMPLE_INPUTS, RAW_SENSOR_FEED)
@@ -4919,15 +4940,15 @@ if RUN_SCRIPTED_TEST:
     display(audit_table([t.case]))
 
 # ====================================================================================================
-# notebook cell 70: O · Orchestrator: pick a case and run it end to end (agents → rules → people → outcome → learning loop)
+# notebook cell 71: O · Orchestrator: pick a case and run it end to end (agents → rules → people → outcome → learning loop)
 # ====================================================================================================
 #@title O · Orchestrator: pick a case and run it end to end (agents → rules → people → outcome → learning loop)
 ORCH_STEP_DELAY_S = 0.2  #@param {type:"number"}
 import ipywidgets as W
 import html as _h
-from transit_ai._ipython_shim import display, clear_output, Markdown, HTML
+from _ipython_shim import display, HTML
 
-# case sources
+# ---------------------------------------------------------------- case sources
 def _orch_sources():
     src = {"LIVE · tonight's NJ Transit hand-off (Section A)": lambda: copy.deepcopy(_raw_a),
            "Section B sample · Route 12 cancellation + last rail connection":
@@ -4940,7 +4961,7 @@ ORCH_SOURCES = _orch_sources()
 ROSTER_NAMES = [r["name"] for r in ETH_SAMPLES["Transit review team (this system)"]]
 ORCH_PEOPLE = {"first": "Ana Lopez", "second": "Chen Wei", "planner": "Ben Carter", "owner": "Dana Brooks"}   # pre-filled; edit freely
 
-# look and feel (same colour key as the workflow diagram)
+# ---------------------------------------------------------------- look and feel (same colour key as the workflow diagram)
 KIND = {"data": ("#EDE9FE", "#5B21B6", "Data / output"), "agent": ("#DCFCE7", "#166534", "AI agent"),
         "rule": ("#DBEAFE", "#1E40AF", "Fixed rule"), "human": ("#FFEDD5", "#9A3412", "Person"),
         "safe": ("#FEE2E2", "#991B1B", "Safe default / monitoring")}
@@ -5031,23 +5052,41 @@ def audit_html(case, last=None):
     out = ["<table style='border-collapse:collapse;font:12px sans-serif;width:100%'>"]
     for e in rows:
         bg, fg, _ = KIND[_kind_of(e)]
-        out.append(f"<tr style='background:{bg};color:{fg}'><td style='padding:3px 6px;white-space:nowrap'>{e['ts'][11:19]}</td>"
+        out.append(f"<tr style='background:{bg};color:{fg}'><td style='padding:3px 6px;white-space:nowrap'>{e['ts'][11:19]} ET</td>"
                    f"<td style='padding:3px 6px'><b>{_h.escape(e['stage'])}</b></td><td style='padding:3px 6px'>{_h.escape(str(e['actor']))}</td>"
                    f"<td style='padding:3px 6px'>{_h.escape(str(e['event']))}</td>"
                    f"<td style='padding:3px 6px;color:#334155'>{_h.escape(str(e['detail']))[:220]}</td></tr>")
     return "".join(out) + "</table>"
 
 
-def _banner(text, kind="human"):
+def _banner_html(text, kind="human"):
     bg, fg, _ = KIND[kind]
-    return HTML(f"<div style='margin:8px 0;padding:10px 12px;border-left:6px solid {fg};background:{bg};color:{fg};"
-                f"font:14px sans-serif'>{text}</div>")
+    return (f"<div style='margin:8px 0;padding:10px 12px;border-left:6px solid {fg};background:{bg};color:{fg};"
+            f"font:14px sans-serif'>{text}</div>")
 
 
-# the orchestrator
+def _md_html(text):
+    """Markdown → HTML for display inside widgets (tables included)."""
+    try:
+        import markdown as _mdlib
+        out = _mdlib.markdown(text, extensions=["tables"])
+    except Exception:
+        out = "<pre style='white-space:pre-wrap'>" + _h.escape(text) + "</pre>"
+    return (out.replace("<table>", "<table style='border-collapse:collapse;font-size:12px;margin:6px 0'>")
+               .replace("<th>", "<th style='border:1px solid #d1d5db;padding:3px 6px;background:#f3f4f6'>")
+               .replace("<td>", "<td style='border:1px solid #e5e7eb;padding:3px 6px'>"))
+
+
+def _w_html(html):
+    return W.HTML(value=f"<div style='font:13px sans-serif;max-width:1100px'>{html}</div>")
+
+
+# ---------------------------------------------------------------- the orchestrator
 class Orchestrator:
     """One place to run a case end to end. AI agents and fixed rules run automatically; the run stops at every box in the
-    diagram where a person decides, shows that person a form, and continues from their answer."""
+    diagram where a person decides, shows that person a form, and continues from their answer.
+    The screen is built from widgets only (no Output-capture contexts), so it redraws reliably in Colab however many cases
+    are processed."""
 
     def __init__(self, store):
         self.S, self.case, self.msg = store, None, ""
@@ -5057,37 +5096,29 @@ class Orchestrator:
         self.refresh = W.Button(description="↻ Refresh / check deadline", layout=W.Layout(width="220px"))
         self.go.on_click(lambda _: self.start())
         self.refresh.on_click(lambda _: self.render())
-        self.top = W.Output()
-        self.form = W.Output()
-        self.log = W.Output()
+        self.top = W.HTML()
+        self.form = W.VBox()
+        self.log = W.HTML()
         self.ui = W.VBox([W.HTML("<h3 style='margin:4px 0'>Orchestrator · select a case and process it end to end</h3>"),
                           W.HBox([self.src, self.use_llm]), W.HBox([self.go, self.refresh]), self.top, self.form,
-                          W.HTML("<b>Audit trail (every step, who did it, and why)</b>"), self.log])
+                          W.HTML("<b>Audit trail (every step, who did it, and why · times in ET)</b>"), self.log])
 
-    # run the automatic part, showing each agent / rule step as it happens
+    # ---- run the automatic part, showing each agent / rule step as it happens
     def start(self):
         self.msg = ""
-        with self.top:
-            clear_output()
-            display(_banner(f"Processing <b>{_h.escape(self.src.value)}</b> …", "agent"))
-        with self.form:
-            clear_output()
-        with self.log:
-            clear_output()
+        self.top.value = _banner_html(f"Processing <b>{_h.escape(self.src.value)}</b> …", "agent")
+        self.form.children = ()
+        self.log.value = ""
         try:
             raw = ORCH_SOURCES[self.src.value]()
             self.case = self.S.new_case(raw, use_llm=self.use_llm.value)
             self.case["orchestrator"] = True
         except Exception as e:
-            with self.top:
-                clear_output()
-                display(_banner(f"Could not open the case: {_h.escape(str(e))}", "safe"))
+            self.top.value = _banner_html(f"Could not open the case: {_h.escape(str(e))}", "safe")
             return
-        with self.log:
-            for i in range(1, len(self.case["audit"]) + 1):     # replay the automatic steps one by one
-                clear_output(wait=True)
-                display(HTML(audit_html({"audit": self.case["audit"][:i]})))
-                time.sleep(max(0.0, ORCH_STEP_DELAY_S))
+        for i in range(1, len(self.case["audit"]) + 1):           # replay the automatic steps one by one
+            self.log.value = audit_html({"audit": self.case["audit"][:i]})
+            time.sleep(max(0.0, ORCH_STEP_DELAY_S))
         self.render()
 
     def _act(self, fn, ok_msg=None):
@@ -5106,28 +5137,27 @@ class Orchestrator:
         if c["status"] == "IMPLEMENTED":                           # Outcome Evaluator runs automatically after a completed action
             self.S.evaluate_outcome(c, self.S.simulate_observed(c))
 
-    # screen
+    # ---- screen
     def render(self, rebuild_form=True):
         c = self.case
         if c is None:
             return
         if c["status"] in REVIEW_STATUSES:
             self.S.enforce_deadline(c)
-        with self.top:
-            clear_output()
-            A = c["analysis"]
-            display(HTML(f"<div style='font:13px sans-serif;margin:4px 0'><b>{c['case_id']}</b> · {_h.escape(c['scenario_name'])} · "
-                         f"rules v{c['policy_version']} · gate <b>{A['gate']}</b> — {_h.escape(A.get('gate_reason', ''))}</div>"))
-            display(HTML(diagram_progress(c)))
-            if self.msg:
-                display(_banner(_h.escape(self.msg), "safe" if self.msg.startswith("⛔") else "rule"))
+        A = c["analysis"]
+        top = (f"<div style='font:13px sans-serif;margin:4px 0'><b>{c['case_id']}</b> · {_h.escape(c['scenario_name'])} · "
+               f"rules v{c['policy_version']} · gate <b>{A['gate']}</b> — {_h.escape(A.get('gate_reason', ''))}</div>"
+               + diagram_progress(c))
+        if self.msg:
+            top += _banner_html(_h.escape(self.msg), "safe" if self.msg.startswith("⛔") else "rule")
+        self.top.value = top
         if rebuild_form:
-            with self.form:
-                clear_output()
-                self._form_for(c)
-        with self.log:
-            clear_output()
-            display(HTML(audit_html(c)))
+            try:
+                self.form.children = tuple(self._form_for(c))
+            except Exception as e:                                  # never leave the person without a screen
+                self.form.children = (_w_html(_banner_html(f"Could not draw the form: {_h.escape(type(e).__name__)}: "
+                                                           f"{_h.escape(str(e))}", "safe")),)
+        self.log.value = audit_html(c)
 
     def _who(self, label, default=""):
         return W.Combobox(options=ROSTER_NAMES, value=default, placeholder="name", description=label,
@@ -5141,16 +5171,18 @@ class Orchestrator:
         return reason, checks, viewed
 
     def _form_for(self, c):
+        """Return the widgets for whoever must act next on this case."""
         st, A = c["status"], c["analysis"]
         left = self.S.seconds_left(c)
         clock = (f" · ⏱ {int(left // 60)} min {int(left % 60)} s left (covers both reviewers)" if left is not None else "")
+        out = []
 
         if st == "AWAITING_REVIEW":
-            display(_banner(f"🔔 <b>Human Review needed</b> — an operations supervisor or planner decides{clock}"))
-            display(Markdown(c["explanation"]["brief_md"]))
+            out.append(_w_html(_banner_html(f"🔔 <b>Human Review needed</b> — an operations supervisor or planner decides{clock}")))
+            out.append(_w_html(_md_html(c["explanation"]["brief_md"])))
             if c["explanation"].get("narrative"):
-                display(Markdown(f"**Explanation Agent** ({c['explanation']['narrative_source']}, non-authoritative): "
-                                 f"{c['explanation']['narrative']}"))
+                out.append(_w_html(_md_html(f"**Explanation Agent** ({c['explanation']['narrative_source']}, non-authoritative): "
+                                            f"{c['explanation']['narrative']}")))
             who = self._who("Reviewer", ORCH_PEOPLE["first"])
             dec = W.ToggleButtons(options=["Approve", "Revise", "Reject"], description="Decision")
             opts = [(f"{r['rank']}. {r['label']} (Si {r['Si']:.3f})", r["option_id"]) for r in A["ranking"]]
@@ -5173,14 +5205,15 @@ class Orchestrator:
                                                       [cb.description for cb in checks if cb.value], viewed.value, rev))
             submit.on_click(do)
             expire.on_click(lambda _: self._expire(c))
-            display(W.VBox([who, dec, opt, reason, *checks, viewed, rev_box, W.HBox([submit, expire])]))
+            out.append(W.VBox([who, dec, opt, reason, *checks, viewed, rev_box, W.HBox([submit, expire])]))
 
         elif st == "AWAITING_SECOND_REVIEW":
             f = c["review"]["first"]
-            display(_banner(f"🔔 <b>Independent Second Reviewer needed</b> — {f['reviewer']} approved a high-impact action: "
-                            f"<b>{_h.escape(next(o['label'] for o in A['options'] if o['option_id'] == f['option_id']))}</b>{clock}. "
-                            "Must be a different person."))
-            display(Markdown(c["explanation"]["brief_md"]))
+            out.append(_w_html(_banner_html(
+                f"🔔 <b>Independent Second Reviewer needed</b> — {f['reviewer']} approved a high-impact action: "
+                f"<b>{_h.escape(next(o['label'] for o in A['options'] if o['option_id'] == f['option_id']))}</b>{clock}. "
+                "Must be a different person.")))
+            out.append(_w_html(_md_html(c["explanation"]["brief_md"])))
             who = self._who("Reviewer 2", ORCH_PEOPLE["second"])
             dec = W.ToggleButtons(options=["Approve", "Reject"], description="Decision")
             reason, checks, viewed = self._review_inputs()
@@ -5189,36 +5222,36 @@ class Orchestrator:
             submit.on_click(lambda _: self._act(lambda: self.S.submit_second(c, who.value, dec.value, reason.value,
                                                                              [cb.description for cb in checks if cb.value], viewed.value)))
             expire.on_click(lambda _: self._expire(c))
-            display(W.VBox([who, dec, reason, *checks, viewed, W.HBox([submit, expire])]))
+            out.append(W.VBox([who, dec, reason, *checks, viewed, W.HBox([submit, expire])]))
 
         elif st == "AWAITING_IMPLEMENTATION":
             label = next(o["label"] for o in A["options"] if o["option_id"] == c["approved_option_id"])
-            display(_banner(f"🔔 <b>Implement Action</b> — operations staff carry out “{_h.escape(label)}” outside the prototype "
-                            "and record the result. Partial or failed actions go back to human review."))
+            out.append(_w_html(_banner_html(f"🔔 <b>Implement Action</b> — operations staff carry out “{_h.escape(label)}” outside "
+                                            "the prototype and record the result. Partial or failed actions go back to human review.")))
             staff = W.Text(value="Operations staff (depot dispatcher)", description="Staff", layout=W.Layout(width="420px"))
             res = W.ToggleButtons(options=["Completed", "Partial", "Failed"], description="Result")
             notes = W.Textarea(placeholder="Notes (required for Partial or Failed)", layout=W.Layout(width="640px", height="50px"))
             submit = W.Button(description="Record result", button_style="warning")
             submit.on_click(lambda _: self._act(lambda: self.S.record_implementation(c, staff.value, res.value, notes.value)))
-            display(W.VBox([staff, res, notes, submit]))
+            out.append(W.VBox([staff, res, notes, submit]))
 
         elif st == "CONFLICT_REVIEW":
             q = [e for e in A["evidence"] if e["status"] == "quarantined"]
-            display(_banner("🔔 <b>Operator review needed</b> — sources disagree. Quarantined: "
-                            + "; ".join(f"{e['source_id']} ({_h.escape(e['note'])})" for e in q)))
+            out.append(_w_html(_banner_html("🔔 <b>Operator review needed</b> — sources disagree. Quarantined: "
+                                            + "; ".join(f"{e['source_id']} ({_h.escape(e['note'])})" for e in q))))
             who = W.Text(value="Operator on duty (control centre)", description="Operator", layout=W.Layout(width="420px"))
             res = W.ToggleButtons(options=["resolved", "unresolved"], description="Result",
                                   tooltips=["Accept source precedence (vehicle data wins)", "Cannot tell which source is right"])
             submit = W.Button(description="Submit operator check", button_style="warning")
             submit.on_click(lambda _: self._act(lambda: self.S.operator_resolve(c, who.value, res.value)))
-            display(W.VBox([who, res, submit]))
+            out.append(W.VBox([who, res, submit]))
 
         elif st in ("MONITORING", "SAFE_DEFAULT"):
             kind = "Continue monitoring" if st == "MONITORING" else "Safe default"
-            display(_banner(f"<b>{kind}</b> — {_h.escape(c.get('safe_default_reason') or A.get('gate_reason', ''))}. "
-                            "Verified rider information only; no dispatch, rerouting or live control.", "safe"))
+            out.append(_w_html(_banner_html(f"<b>{kind}</b> — {_h.escape(c.get('safe_default_reason') or A.get('gate_reason', ''))}. "
+                                            "Verified rider information only; no dispatch, rerouting or live control.", "safe")))
             if c.get("rider_alert"):
-                display(Markdown(f"**Rider alert:** {c['rider_alert']}"))
+                out.append(_w_html(_md_html(f"**Rider alert:** {c['rider_alert']}")))
             b1 = W.Button(description="Recheck (feed changed)")
             b2 = W.Button(description="Re-escalate (conditions worsen)", button_style="danger")
             b3 = W.Button(description="Evaluate outcome")
@@ -5229,17 +5262,20 @@ class Orchestrator:
             b2.on_click(lambda _: self._act(lambda: self.S.monitor_action(c, "re-escalate")))
             b3.on_click(lambda _: self._act(lambda: self.S.evaluate_outcome(c, self.S.simulate_observed(c))))
             b4.on_click(lambda _: self._act(lambda: self.S.close_false_alarm(c, who.value, why.value)))
-            display(W.VBox([W.HBox([b1, b2, b3]), W.HBox([who, why, b4])]))
+            out.append(W.VBox([W.HBox([b1, b2, b3]), W.HBox([who, why, b4])]))
             if c.get("outcome"):
-                self._learning_loop(c)
+                out += self._learning_loop(c)
 
         elif st in ("EVALUATED", "CLOSED_FALSE_ALARM"):
             o = c.get("outcome") or {}
             if "delay_error_min" in o:
-                display(_banner(f"<b>Outcome Evaluator</b> (separate from the recommender): predicted vs observed delay error "
-                                f"{o['delay_error_min']:+.1f} min · false alarm {o['false_alarm']} · policy weights unchanged.", "agent"))
-                display(pd.DataFrame([{k: v for k, v in o.items() if not isinstance(v, (dict, list))}]))
-            self._learning_loop(c)
+                out.append(_w_html(_banner_html(
+                    f"<b>Outcome Evaluator</b> (separate from the recommender): predicted vs observed delay error "
+                    f"{o['delay_error_min']:+.1f} min · false alarm {o['false_alarm']} · policy weights unchanged.", "agent")))
+                out.append(_w_html(pd.DataFrame([{k: v for k, v in o.items() if not isinstance(v, (dict, list))}])
+                                   .to_html(index=False, border=0)))
+            out += self._learning_loop(c)
+        return out
 
     def _expire(self, c):
         c["review"]["deadline_at"] = iso(utcnow() - timedelta(seconds=1))
@@ -5247,62 +5283,54 @@ class Orchestrator:
         self.msg = "Deadline passed with no complete response → Safe Default."
         self.render()
 
-    # learning loop: Insight Agent → Policy Owner → backtest → new rule version
+    # ---- learning loop: Insight Agent → Policy Owner → backtest → new rule version
     def _learning_loop(self, c):
-        display(HTML("<h4 style='margin:10px 0 4px'>Learning loop · Insight Agent → Policy Owner → backtest → rule version</h4>"))
+        """Widgets for the learning loop. Proposal details and the backtest are shown in an HTML widget, not an Output."""
+        head = W.HTML("<h4 style='margin:10px 0 4px'>Learning loop · Insight Agent → Policy Owner → backtest → rule version</h4>")
         run = W.Button(description="Run Insight Agent")
-        box = W.Output()
-
-        def show(_=None):
-            with box:
-                clear_output()
-                if not self.S.proposals:
-                    display(Markdown(f"_No open proposals. Current rules v{self.S.PM.current['version']}._"))
-                    return
-                pick = W.Dropdown(options=[(f"{p['id']} · {p['title']}", p["id"]) for p in self.S.proposals],
-                                  description="Proposal", layout=W.Layout(width="640px"))
-                info, bt = W.Output(), W.Button(description="Preview backtest")
-
-                def detail(_=None):
-                    p = next(x for x in self.S.proposals if x["id"] == pick.value)
-                    with info:
-                        clear_output()
-                        display(Markdown(f"**{p['title']}** — {p['rationale']} _(evidence: {p['evidence']})_\n\n"
-                                         + "\n".join(f"- `{x['path']}`: {x['old']} → {x['new']}" for x in p["changes"])))
-
-                def preview(_):
-                    p = next(x for x in self.S.proposals if x["id"] == pick.value)
-                    _, summary = run_backtest(self.S, apply_changes(self.S.PM.current, p["changes"]))
-                    with info:
-                        display(Markdown(f"**Backtest:** {summary}"))
-                pick.observe(detail, "value")
-                bt.on_click(preview)
-                who = self._who("Owner", ORCH_PEOPLE["owner"])
-                dec = W.ToggleButtons(options=["Approve", "Reject"], description="Decision")
-                why = W.Text(placeholder="reason (≥ 10 characters)", layout=W.Layout(width="520px"))
-                go = W.Button(description="Submit policy decision", button_style="warning")
-
-                def decide(_):
-                    pid = pick.value
-                    try:
-                        decide_proposal(self.S, pid, who.value, dec.value, why.value)
-                        c["_policy_step"] = f"{pid} {dec.value.lower()}d → rules v{self.S.PM.current['version']}"
-                        self.msg = self.S.last_message
-                        self.render()
-                    except ValueError as e:
-                        self.msg = "⛔ " + str(e)
-                        self.render(rebuild_form=False)
-                go.on_click(decide)
-                display(W.VBox([pick, bt, info, who, dec, why, go]))
-                detail()
 
         def run_insight(_):
             props = insight_agent(self.S)
             self.msg = f"Insight Agent proposed {len(props)} change(s). Nothing changes until the policy owner approves."
             self.render()
         run.on_click(run_insight)
-        display(W.VBox([run, box]))
-        show()
+        if not self.S.proposals:
+            return [head, run, _w_html(f"<i>No open proposals. Current rules v{self.S.PM.current['version']}.</i>")]
+        pick = W.Dropdown(options=[(f"{p['id']} · {p['title']}", p["id"]) for p in self.S.proposals],
+                          description="Proposal", layout=W.Layout(width="640px"))
+        info = W.HTML()
+        bt = W.Button(description="Preview backtest")
+
+        def detail(_=None):
+            p = next(x for x in self.S.proposals if x["id"] == pick.value)
+            info.value = _md_html(f"**{p['title']}** — {p['rationale']} _(evidence: {p['evidence']})_\n\n"
+                                  + "\n".join(f"- `{x['path']}`: {x['old']} → {x['new']}" for x in p["changes"]))
+
+        def preview(_):
+            p = next(x for x in self.S.proposals if x["id"] == pick.value)
+            _, summary = run_backtest(self.S, apply_changes(self.S.PM.current, p["changes"]))
+            detail()
+            info.value += _md_html(f"**Backtest:** {summary}")
+        pick.observe(detail, "value")
+        bt.on_click(preview)
+        who = self._who("Owner", ORCH_PEOPLE["owner"])
+        dec = W.ToggleButtons(options=["Approve", "Reject"], description="Decision")
+        why = W.Text(placeholder="reason (≥ 10 characters)", layout=W.Layout(width="520px"))
+        go = W.Button(description="Submit policy decision", button_style="warning")
+
+        def decide(_):
+            pid = pick.value
+            try:
+                decide_proposal(self.S, pid, who.value, dec.value, why.value)
+                c["_policy_step"] = f"{pid} {dec.value.lower()}d → rules v{self.S.PM.current['version']}"
+                self.msg = self.S.last_message
+                self.render()
+            except ValueError as e:
+                self.msg = "⛔ " + str(e)
+                self.render(rebuild_form=False)
+        go.on_click(decide)
+        detail()
+        return [head, run, W.VBox([pick, bt, info, who, dec, why, go])]
 
 
 ORCH = Orchestrator(APP)
@@ -5311,7 +5339,7 @@ print("Pick a case and press ▶ Process case. AI agents and rules run automatic
 
 
 # ====================================================================================================
-# notebook cell 71: O · Record of orchestrator cases (re-run after finishing a case so the record is saved in the notebook)
+# notebook cell 72: O · Record of orchestrator cases (re-run after finishing a case so the record is saved in the notebook)
 # ====================================================================================================
 #@title O · Record of orchestrator cases (re-run after finishing a case so the record is saved in the notebook)
 _orch_cases = [c for c in APP.cases.values() if c.get("orchestrator")]
@@ -5325,7 +5353,7 @@ for _c in _orch_cases:
 
 
 # ====================================================================================================
-# notebook cell 73: F · Scenario gallery: every path through the workflow, with scripted reviewers
+# notebook cell 74: F · Scenario gallery: every path through the workflow, with scripted reviewers
 # ====================================================================================================
 #@title F · Scenario gallery: every path through the workflow, with scripted reviewers
 RUN_SCENARIO_GALLERY = True  #@param {type:"boolean"}
@@ -5445,7 +5473,7 @@ def scenario(fn):
     return fn
 
 
-# the scenarios
+# ------------------------------------------------------------------ the scenarios
 def s01_live():
     raw = copy.deepcopy(_raw_a)
     case = open_case(raw, use_llm=LLM_READY)
@@ -5687,12 +5715,27 @@ def s15_policy_loop():
 
 
 if RUN_SCENARIO_GALLERY:
-    print(f"Scenario gallery · rules v{APP.PM.current['version']} · scripted people: "
-          + ", ".join(f"{k} = {v}" for k, v in PEOPLE.items()))
-    for fn in [s01_live, s02_two_person, s03_safeguards, s04_override_failed, s05_revisions, s06_reject, s07_deadline,
-               s08_below, s09_conflict_resolved, s10_conflict_unresolved, s11_outage_reescalate, s12_outage_backup,
-               s13_social, s14_agent_error, s15_policy_loop]:
-        scenario(fn)
+    _old = [cid for cid, case in APP.cases.items() if case.get("demo_script")]
+    for cid in _old:                                   # a re-run replaces the earlier gallery cases instead of adding to them
+        APP.cases.pop(cid)
+    if _old:
+        print(f"Removed {len(_old)} cases from an earlier gallery run, so nothing is counted twice.")
+    # Scenarios 1 to 14 run on the published rules (the first version), so each path behaves as documented even if a
+    # policy change was approved earlier in this session (for example in the orchestrator). The rules in force are put back
+    # before scenario 15, whose policy decision then builds on them.
+    _rules_in_force = APP.PM.current_index
+    APP.PM.current_index = 0
+    try:
+        print(f"Scenario gallery · published rules v{APP.PM.current['version']} (rules in force this session: "
+              f"v{APP.PM.versions[_rules_in_force]['version']}) · scripted people: "
+              + ", ".join(f"{k} = {v}" for k, v in PEOPLE.items()))
+        for fn in [s01_live, s02_two_person, s03_safeguards, s04_override_failed, s05_revisions, s06_reject, s07_deadline,
+                   s08_below, s09_conflict_resolved, s10_conflict_unresolved, s11_outage_reescalate, s12_outage_backup,
+                   s13_social, s14_agent_error]:
+            scenario(fn)
+    finally:
+        APP.PM.current_index = _rules_in_force
+    scenario(s15_policy_loop)
     GALLERY_DF = pd.DataFrame(GALLERY)
     print("\n")
     display(GALLERY_DF)
@@ -5708,7 +5751,7 @@ else:
 
 
 # ====================================================================================================
-# notebook cell 75: V1. Evaluation settings, helpers and readiness check
+# notebook cell 76: V1. Evaluation settings, helpers and readiness check
 # ====================================================================================================
 #@title V1. Evaluation settings, helpers and readiness check
 EV_USE_LIVE = True                  #@param {type:"boolean"}
@@ -5775,7 +5818,7 @@ print(f"Evaluation ready. Expected answers use published rules v{EV_POLICY['vers
 print(f"Live data allowed: {EV_USE_LIVE and globals().get('LIVE', False)} (A1 DATA_MODE = {globals().get('DATA_MODE')})")
 
 # ====================================================================================================
-# notebook cell 77: V2. Real feed snapshot and data quality checks
+# notebook cell 78: V2. Real feed snapshot and data quality checks
 # ====================================================================================================
 #@title V2. Real feed snapshot and data quality checks
 ev_clear("V2")
@@ -5816,6 +5859,8 @@ def ev_alert_rows(al):
             a = ent.alert
             txt = lambda ts: ts.translation[0].text.strip() if len(ts.translation) else ""
             out.append({"alert_id": ent.id, "routes": sorted({ie.route_id for ie in a.informed_entity if ie.route_id}),
+                        "stops": sorted({ie.stop_id for ie in a.informed_entity if ie.stop_id}),
+                        "agency_wide": any(ie.agency_id and not ie.route_id and not ie.stop_id for ie in a.informed_entity),
                         "header": txt(a.header_text), "description": txt(a.description_text)[:600],
                         "effect": a.Effect.Name(a.effect) if a.effect else None})
     return out
@@ -5897,10 +5942,14 @@ if EV_SNAPSHOT:
              ev_pct(sum(-30 <= d <= 180 for d in delays), len(delays)),
              None if not delays else ev_pct(sum(-30 <= d <= 180 for d in delays), len(delays)) >= 99, src)
     alert_text = [a for a in alerts if a["header"] or a["description"]]
-    ev_check("V2", "alerts that have text and name a route (%)", ">= 80",
-             ev_pct(sum(bool(a["routes"]) for a in alert_text), len(alert_text)),
-             None if not alert_text else ev_pct(sum(bool(a["routes"]) for a in alert_text), len(alert_text)) >= 80, src,
+    # An alert can target a route, a stop, or the whole agency; only route alerts can reach a bus case, so their share is reported.
+    targeted = sum(bool(a["routes"] or a.get("stops") or a.get("agency_wide")) for a in alert_text)
+    ev_check("V2", "alerts that say what they affect: route, stop or whole agency (%)", ">= 95", ev_pct(targeted, len(alert_text)),
+             None if not alert_text else ev_pct(targeted, len(alert_text)) >= 95, src,
              "" if alert_text else "no alerts in this snapshot")
+    ev_check("V2", "alerts that name a bus route, so they can reach a case (%)", "reported",
+             ev_pct(sum(bool(a["routes"]) for a in alert_text), len(alert_text)), "info", src,
+             "stop and system-wide alerts are valid but never attach to a route case")
 
     EV_FEED_SUMMARY = {
         "source": src, "vehicles": n, "trip_updates": EV_SNAPSHOT["trip_updates"], "alerts": len(alerts),
@@ -5917,7 +5966,7 @@ else:
 ev_part_table("V2")
 
 # ====================================================================================================
-# notebook cell 79: V3. BUSDV2 login, vehicle locations, departures and cross checks against GTFSG2
+# notebook cell 80: V3. BUSDV2 login, vehicle locations, departures and cross checks against GTFSG2
 # ====================================================================================================
 #@title V3. BUSDV2 login, vehicle locations, departures and cross checks against GTFSG2
 ev_clear("V3")
@@ -6048,12 +6097,15 @@ if EV_BUS["vehicles"] and EV_SNAPSHOT:
                           "passenger_load_busdv": b.get("VehiclePassengerLoad")})
     EV_BUS["pairs"] = pairs
     nb = len(EV_BUS["vehicles"])
-    ev_check("V3", "BUSDV2 buses also found in GTFSG2 (%)", ">= 80", ev_pct(len(pairs), nb), ev_pct(len(pairs), nb) >= 80, bus_src,
-             "both feeds are snapshots a few seconds apart, so a few buses can enter or leave the area in between")
+    small = f" Only {nb} BUSDV2 buses near Newark Penn at this hour: repeat at a busier time." if nb < 10 else ""
+    ev_check("V3", "BUSDV2 buses also found in GTFSG2 (%)", ">= 80", f"{ev_pct(len(pairs), nb)} ({len(pairs)} of {nb})",
+             ev_pct(len(pairs), nb) >= 80, bus_src,
+             "both feeds are snapshots a few seconds apart, so a few buses can enter or leave the area in between." + small)
     if pairs:
         same_route = sum(p["route_gtfs"].lstrip("0") == p["route_busdv"].lstrip("0") for p in pairs)
         gaps = sorted(p["gap_km"] for p in pairs)
-        ev_check("V3", "matched buses on the same route in both feeds (%)", ">= 95", ev_pct(same_route, len(pairs)),
+        ev_check("V3", "matched buses on the same route in both feeds (%)", ">= 95",
+                 f"{ev_pct(same_route, len(pairs))} ({same_route} of {len(pairs)})",
                  ev_pct(same_route, len(pairs)) >= 95, bus_src)
         ev_check("V3", "median distance between the two GPS positions (km)", "<= 0.5", round(statistics.median(gaps), 3),
                  statistics.median(gaps) <= 0.5, bus_src, "a bus moves about 0.2 km in 30 s of city traffic")
@@ -6100,7 +6152,7 @@ else:
 ev_part_table("V3")
 
 # ====================================================================================================
-# notebook cell 81: V4. Run the pipeline on real buses and compare with the published rules
+# notebook cell 82: V4. Run the pipeline on real buses and compare with the published rules
 # ====================================================================================================
 #@title V4. Run the pipeline on real buses and compare with the published rules
 ev_clear("V4")
@@ -6153,6 +6205,9 @@ if EV_SNAPSHOT:
                    "hard_triggers": ", ".join(trig) or "none",
                    "top_option": A["ranking"][0]["option_id"] if A.get("ranking") else "",
                    "agrees": A["gate"] in expected}
+            if A["gate"] == "SIGNIFICANT" and "SIGNIFICANT" not in expected and not trig \
+                    and (s.get("R") or 0) >= EV_POLICY["significance_R"]:
+                row["agrees"], row["reason"] = True, f"R = {s.get('R')} >= {EV_POLICY['significance_R']} (significance rule)"
             if A["gate"] == "MONITORING" and "MONITORING" in expected and "BELOW_THRESHOLD" in expected:
                 row["agrees"] = (A.get("confidence") or {}).get("C", 1) < EV_POLICY["confidence_threshold"] \
                     or any(e["status"] == "stale" for e in A.get("evidence", []))
@@ -6172,8 +6227,12 @@ if EV_SNAPSHOT:
              f"{int(must['agrees'].sum())} of {len(must)}", None if must.empty else bool(must["agrees"].all()), src,
              "" if len(must) else "no bus was cancelled or 15+ minutes late in this snapshot")
     not_sig = df[df["expected"] != "SIGNIFICANT"]
-    ev_check("V4", "real buses escalated without a hard trigger (false escalations)", 0,
-             int((not_sig["engine_gate"] == "SIGNIFICANT").sum()), int((not_sig["engine_gate"] == "SIGNIFICANT").sum()) == 0, src)
+    false_esc = not_sig[(not_sig["engine_gate"] == "SIGNIFICANT") & (not_sig["R"].fillna(0) < EV_POLICY["significance_R"])]
+    ev_check("V4", "real buses escalated with no hard trigger and R below 0.50 (false escalations)", 0, len(false_esc),
+             len(false_esc) == 0, src, "a case with R of 0.50 or more is significant by the rules, so it is not counted here")
+    if "C" in df and df["C"].nunique() == 1:
+        ev_check("V4", "confidence C on real buses", "reported", df["C"].iloc[0], "info", src,
+                 "the same for every bus: one real-time source, so quality, agreement and completeness do not vary")
     rounding = df[df["delay_raw_min"].notna() & (df["delay_raw_min"] < 15) & (df["delay_in_engine_min"].fillna(0) >= 15)] \
         if "delay_in_engine_min" in df else df.iloc[0:0]
     ev_check("V4", "delays pushed over 15 min by rounding", 0, len(rounding), len(rounding) == 0, src)
@@ -6186,7 +6245,7 @@ else:
 ev_part_table("V4")
 
 # ====================================================================================================
-# notebook cell 83: V5. Hand labeled test set for delay, cause and the small language model
+# notebook cell 84: V5. Hand labeled test set for delay, cause and the small language model
 # ====================================================================================================
 #@title V5. Hand labeled test set for delay, cause and the small language model
 ev_clear("V5")
@@ -6274,7 +6333,7 @@ display(gold[~(gold["delay_ok"] & gold["cause_ok"])][["text", "true_delay", "ext
 ev_part_table("V5")
 
 # ====================================================================================================
-# notebook cell 85: V6. Detector counts against hand counts
+# notebook cell 86: V6. Detector counts against hand counts
 # ====================================================================================================
 #@title V6. Detector counts against hand counts
 ev_clear("V6")
@@ -6299,6 +6358,7 @@ for cam_id, (fname, nframes, truth) in EV_CV_TRUTH.items():
                      "error_vs_visible": got - vis, "within_range": vis <= got <= vis + part})
 if rows:
     cv = pd.DataFrame(rows)
+    EV_CV_ROWS = cv
     mae = cv["error_vs_visible"].abs().mean()
     ev_check("V6", "frames counted within the hand count range (%)", ">= 75", ev_pct(int(cv["within_range"].sum()), len(cv)),
              ev_pct(int(cv["within_range"].sum()), len(cv)) >= 75, src, f"detector: {CV_RESULTS.get('detector')}")
@@ -6312,7 +6372,7 @@ ev_check("V6", "no identities or images kept", "identities_stored and images_sto
 ev_part_table("V6")
 
 # ====================================================================================================
-# notebook cell 87: V7. Golden presets, thresholds, formulas, determinism and monotonic checks
+# notebook cell 88: V7. Golden presets, thresholds, formulas, determinism and monotonic checks
 # ====================================================================================================
 #@title V7. Golden presets, thresholds, formulas, determinism and monotonic checks
 ev_clear("V7")
@@ -6406,7 +6466,7 @@ ev_check("V7", "the policy passes its own invariants", "no errors", validate_pol
 ev_part_table("V7")
 
 # ====================================================================================================
-# notebook cell 89: V8. Scenario gallery cases end where the diagram says
+# notebook cell 90: V8. Scenario gallery cases end where the diagram says
 # ====================================================================================================
 #@title V8. Scenario gallery cases end where the diagram says
 ev_clear("V8")
@@ -6443,7 +6503,7 @@ if gal:
 ev_part_table("V8")
 
 # ====================================================================================================
-# notebook cell 91: V9. Explanation narratives only use numbers the rules produced
+# notebook cell 92: V9. Explanation narratives only use numbers the rules produced
 # ====================================================================================================
 #@title V9. Explanation narratives only use numbers the rules produced
 ev_clear("V9")
@@ -6486,7 +6546,7 @@ for cid, case in APP.cases.items():
     brief = ex.get("brief_md", "")
     order_ok = brief.find("All alternatives") != -1 and brief.find("All alternatives") < brief.find("Recommendation")
     rows.append({"case": cid, "narrative_by": ex.get("narrative_source"), "numbers": len(nums), "unsupported": unsupported,
-                 "names_rank_1": top.split(" \u2014 ")[0] in ex["narrative"], "alternatives_before_recommendation": order_ok})
+                 "names_rank_1": narrative_names_rank1(ex["narrative"], top), "alternatives_before_recommendation": order_ok})
 if rows:
     ex_df = pd.DataFrame(rows)
     llm = ex_df[~ex_df["narrative_by"].astype(str).str.startswith("template")]
@@ -6502,14 +6562,15 @@ if rows:
              ev_pct(int(ex_df["alternatives_before_recommendation"].sum()), len(ex_df)),
              bool(ex_df["alternatives_before_recommendation"].all()), src)
     if not len(llm):
-        ev_check("V9", "live LLM narratives", "at least one", 0, None, src, "no LLM key in this run, so only templates were checked")
+        ev_check("V9", "live LLM narratives", "at least one", 0, None, src, "no live-LLM narrative among the checked cases (the gallery uses templates). Process a case in Section O with "
+                 "'Live LLM narrative' ticked, then rerun V9")
     display(ex_df)
 else:
     ev_check("V9", "explanations to check", "at least one significant case", 0, None, src, "run Section F or the orchestrator first")
 ev_part_table("V9")
 
 # ====================================================================================================
-# notebook cell 93: V10. Ethics training gate and conflict of interest gate
+# notebook cell 94: V10. Ethics training gate and conflict of interest gate
 # ====================================================================================================
 #@title V10. Ethics training gate and conflict of interest gate
 ev_clear("V10")
@@ -6666,7 +6727,7 @@ else:
 ev_part_table("V10")
 
 # ====================================================================================================
-# notebook cell 95: V11. Scorecard and saved results
+# notebook cell 96: V11. Scorecard and saved results
 # ====================================================================================================
 #@title V11. Scorecard and saved results
 EV_SCORECARD = pd.DataFrame(EV_RESULTS)
@@ -6695,7 +6756,189 @@ else:
     print("No checks recorded. Run V1 to V10 first.")
 
 # ====================================================================================================
-# notebook cell 97: E4 · Outputs: interactive map, tables and charts
+# notebook cell 98: V12. Evaluation dashboard (visual summary of V2 to V10)
+# ====================================================================================================
+#@title V12. Evaluation dashboard (visual summary of V2 to V10)
+import html as _vh
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from _ipython_shim import HTML, display
+
+EV_PART_LABELS = {
+    "V2": ("Real feed quality", "NJ Transit GTFSG2: freshness, ids, positions, delays, alerts"),
+    "V3": ("Second feed cross-check", "BUSDV2 against GTFSG2: same buses, routes and positions"),
+    "V4": ("Pipeline on real buses", "every real bus through Section A and E2 against the published rules"),
+    "V5": ("Reading alert text", "delay and cause extraction on a hand-labeled test set"),
+    "V6": ("Computer vision counts", "detector counts against hand counts"),
+    "V7": ("Scoring rules", "presets, thresholds, formulas, determinism, monotonicity"),
+    "V8": ("Workflow paths", "gallery cases end where the diagram says"),
+    "V9": ("Explanation grounding", "narratives use only rule-produced numbers"),
+    "V10": ("Governance gates", "ethics training and conflict of interest"),
+}
+# Status colors (reserved for pass / fail) always ship with an icon and a label; skipped and reported are neutral.
+EV_STYLE = {"pass": ("#0ca30c", "✓", "passed"), "FAIL": ("#d03b3b", "✗", "failed"),
+            "skipped": ("#a3a29c", "–", "skipped"), "reported": ("#2a78d6", "i", "reported")}
+INK, INK2, SURFACE, RULE = "#0b0b0b", "#52514e", "#fcfcfb", "#e4e3df"
+
+
+def _ev_counts(rows):
+    return {k: sum(r["result"] == k for r in rows) for k in EV_STYLE}
+
+
+def _ev_tile(value, label, sub="", tone=None):
+    accent = f"border-top:4px solid {EV_STYLE[tone][0]};" if tone else f"border-top:4px solid {RULE};"
+    return (f"<div style='flex:1 1 150px;min-width:150px;background:#fff;border:1px solid {RULE};{accent}border-radius:8px;"
+            f"padding:12px 14px'><div style='font-size:26px;font-weight:650;color:{INK};line-height:1.1'>{value}</div>"
+            f"<div style='font-size:13px;color:{INK};margin-top:4px'>{label}</div>"
+            f"<div style='font-size:11.5px;color:{INK2};margin-top:2px'>{sub}</div></div>")
+
+
+def ev_dashboard_html():
+    rows = EV_RESULTS
+    tot = _ev_counts(rows)
+    graded = tot["pass"] + tot["FAIL"]
+    when = iso(utcnow())[:16].replace("T", " ")
+    real = pd.DataFrame(globals().get("EV_REAL_CASES") or [])
+    sig = real[real["expected"] == "SIGNIFICANT"] if len(real) else real
+    by = {r["check"]: r for r in rows}
+    tiles = [
+        _ev_tile(f"{tot['pass']} / {graded}", "checks passed", f"{round(100 * tot['pass'] / graded) if graded else 0}% of graded checks", "pass"),
+        _ev_tile(tot["FAIL"], "checks failed", "listed below with what to fix", "FAIL" if tot["FAIL"] else None),
+        _ev_tile(tot["skipped"], "checks skipped", "no data in this run (not counted as passed)"),
+        _ev_tile(len(real), "real buses run end to end",
+                 f"{int(real['agrees'].sum())} reached the rule's answer" if len(real) else "no live snapshot"),
+        _ev_tile(f"{int(sig['agrees'].sum())} / {len(sig)}" if len(sig) else "—", "real 15+ min delays escalated",
+                 "recall on real NJ Transit buses", ("pass" if len(sig) and sig["agrees"].all() else "FAIL") if len(sig) else None),
+    ]
+    legend = " ".join(f"<span style='display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:12px;color:{INK2}'>"
+                      f"<span style='width:12px;height:12px;border-radius:3px;background:{c}'></span>{icon} {lab}</span>"
+                      for c, icon, lab in EV_STYLE.values())
+    bars = []
+    for part, (name, desc) in EV_PART_LABELS.items():
+        pr = [r for r in rows if r["part"] == part]
+        if not pr:
+            continue
+        cnt = _ev_counts(pr)
+        n = len(pr)
+        segs = "".join(
+            f"<div title='{name}: {cnt[k]} {EV_STYLE[k][2]}' style='width:{100 * cnt[k] / n:.2f}%;background:{EV_STYLE[k][0]};"
+            f"height:100%;border-right:2px solid {SURFACE};box-sizing:border-box'></div>" for k in EV_STYLE if cnt[k])
+        label = ", ".join(f"{cnt[k]} {EV_STYLE[k][2]}" for k in EV_STYLE if cnt[k])
+        flag = (f"<span style='color:{EV_STYLE['FAIL'][0]};font-weight:600'>✗ {cnt['FAIL']} to fix</span>" if cnt["FAIL"]
+                else f"<span style='color:#006300;font-weight:600'>✓ all graded checks pass</span>" if cnt["pass"] else "")
+        bars.append(
+            f"<div style='display:grid;grid-template-columns:minmax(150px,230px) 1fr minmax(120px,170px);gap:12px;align-items:center;"
+            f"padding:8px 0;border-bottom:1px solid {RULE}'>"
+            f"<div><div style='font-size:13px;font-weight:600;color:{INK}'>{part} · {name}</div>"
+            f"<div style='font-size:11.5px;color:{INK2}'>{desc}</div></div>"
+            f"<div><div style='display:flex;height:14px;border-radius:4px;overflow:hidden;background:{RULE}'>{segs}</div>"
+            f"<div style='font-size:11.5px;color:{INK2};margin-top:3px'>{label}</div></div>"
+            f"<div style='font-size:12px;text-align:right'>{flag}</div></div>")
+    fails = [r for r in rows if r["result"] == "FAIL"]
+    fail_html = "".join(
+        f"<div style='border-left:4px solid {EV_STYLE['FAIL'][0]};background:#fff;border-radius:6px;padding:8px 12px;margin:6px 0;"
+        f"border:1px solid {RULE};border-left-width:4px'><div style='font-size:13px;color:{INK}'><b>✗ {r['part']} · "
+        f"{_vh.escape(r['check'])}</b></div><div style='font-size:12px;color:{INK2}'>expected {_vh.escape(r['expected'])} · "
+        f"got <b style='color:{INK}'>{_vh.escape(r['actual'])}</b>{(' · ' + _vh.escape(r['note'])) if r['note'] else ''}</div></div>"
+        for r in fails) or f"<div style='font-size:13px;color:#006300'>✓ No failed checks.</div>"
+    skips = [r for r in rows if r["result"] == "skipped"]
+    skip_html = "".join(f"<li>{r['part']} · {_vh.escape(r['check'])}: {_vh.escape(r['note'] or r['actual'])}</li>" for r in skips)
+    src = (EV_SNAPSHOT or {}).get("source", EV_SNAPSHOT_STATUS) if "EV_SNAPSHOT" in globals() else "—"
+    return (
+        f"<div style='font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:{SURFACE};color:{INK};"
+        f"border:1px solid {RULE};border-radius:12px;padding:18px 20px;max-width:1100px'>"
+        f"<div style='font-size:20px;font-weight:650'>System evaluation · {tot['pass']} of {graded} graded checks passed</div>"
+        f"<div style='font-size:12.5px;color:{INK2};margin:4px 0 14px'>Run {when} ET · expected answers from published rules "
+        f"v{EV_POLICY['version']} · NJ Transit data: {_vh.escape(str(src))} · BUSDV2: {_vh.escape(str(EV_BUS.get('status')))}</div>"
+        f"<div style='display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px'>{''.join(tiles)}</div>"
+        f"<div style='font-size:15px;font-weight:650;margin-bottom:4px'>Results by part</div><div style='margin-bottom:6px'>{legend}</div>"
+        f"{''.join(bars)}"
+        f"<div style='font-size:15px;font-weight:650;margin:18px 0 4px'>Failed checks</div>{fail_html}"
+        + (f"<div style='font-size:15px;font-weight:650;margin:18px 0 4px'>Skipped (no data this run)</div>"
+           f"<ul style='font-size:12.5px;color:{INK2};margin:4px 0 0 18px;padding:0'>{skip_html}</ul>" if skips else "")
+        + "</div>")
+
+
+def ev_dashboard_figure():
+    """Two evidence panels: real buses against the two significance rules, and detector vs hand counts."""
+    real = pd.DataFrame(globals().get("EV_REAL_CASES") or [])
+    cvr = globals().get("EV_CV_ROWS")
+    panels = [p for p in ("real", "cv") if (p == "real" and len(real) and "R" in real) or (p == "cv" and cvr is not None and len(cvr))]
+    if not panels:
+        return None
+    plt.rcParams.update({"font.family": "DejaVu Sans", "axes.edgecolor": "#b9b8b2", "axes.labelcolor": INK2,
+                         "xtick.color": INK2, "ytick.color": INK2})
+    fig, axes = plt.subplots(1, len(panels), figsize=(6.4 * len(panels), 4.4), facecolor="white")
+    axes = np.atleast_1d(axes)
+    for ax, p in zip(axes, panels):
+        ax.set_facecolor("white")
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.grid(axis="y", color="#ecebe7", linewidth=0.8)
+        ax.set_axisbelow(True)
+        if p == "real":
+            d = real.dropna(subset=["delay_raw_min", "R"])
+            gates = [("SIGNIFICANT", "#eb6834"), ("BELOW_THRESHOLD", "#2a78d6"), ("MONITORING", "#1baf7a")]
+            for g, col in gates:
+                s = d[d["engine_gate"] == g]
+                if len(s):
+                    ax.scatter(s["delay_raw_min"], s["R"], s=46, color=col, edgecolor="white", linewidth=1.2, zorder=3,
+                               label=f"{g.replace('_', ' ').lower()} ({len(s)})")
+            ht = EV_POLICY["hard_trigger"]["delay_min"]
+            rs = EV_POLICY["significance_R"]
+            ax.axvline(ht, color="#52514e", linestyle=(0, (4, 3)), linewidth=1)
+            ax.axhline(rs, color="#52514e", linestyle=(0, (1, 3)), linewidth=1)
+            ax.text(ht + 0.4, 0.97, f"{ht} min hard trigger", transform=ax.get_xaxis_transform(), fontsize=9, color=INK2, va="top")
+            ax.text(0.01, rs + 0.015, f"R = {rs} significance line", transform=ax.get_yaxis_transform(), fontsize=9, color=INK2)
+            ax.set_xlabel("Delay reported by NJ Transit (min)")
+            ax.set_ylabel("Reliability impact R")
+            ax.set_ylim(0, max(1.0, float(d["R"].max()) + 0.05) if len(d) else 1)
+            ax.set_title(f"{int(real['agrees'].sum())} of {len(real)} real buses reached the rule's answer",
+                         loc="left", fontsize=12, color=INK, fontweight="bold")
+            ax.legend(frameon=False, fontsize=9, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3,
+                      title="Engine gate", title_fontsize=9)
+        else:
+            c = cvr.reset_index(drop=True)
+            x = np.arange(len(c))
+            lab = [("photo" if "STOP" in r.camera else f"video {r.frame}") for r in c.itertuples()]
+            ax.vlines(x, c["visible"], c["visible"] + c["partly_visible"], color="#a3a29c", linewidth=8, zorder=2)
+            ax.scatter(x, c["visible"], marker="_", s=180, color="#52514e", zorder=3)
+            ok = c["within_range"]
+            ax.scatter(x[ok], c["detector"][ok], s=60, color="#2a78d6", edgecolor="white", linewidth=1.2, zorder=4)
+            ax.scatter(x[~ok], c["detector"][~ok], s=60, marker="D", color="#2a78d6", edgecolor="white", linewidth=1.2, zorder=4)
+            for xi, (g, k) in enumerate(zip(c["detector"], ok)):
+                if not k:
+                    ax.annotate("outside", (xi, g), textcoords="offset points", xytext=(0, 8), ha="center", fontsize=8.5, color=INK2)
+            ax.set_xticks(x, lab, rotation=35, ha="right", fontsize=8.5)
+            ax.set_ylabel("People in the frame")
+            ax.set_ylim(0, max(c["detector"].max(), (c["visible"] + c["partly_visible"]).max()) + 2)
+            ax.set_title(f"Detector inside the hand-count range in {int(ok.sum())} of {len(c)} frames",
+                         loc="left", fontsize=12, color=INK, fontweight="bold")
+            ax.legend(handles=[Line2D([0], [0], color="#a3a29c", linewidth=8, label="hand count: visible to incl. partly visible"),
+                               Line2D([0], [0], marker="o", color="w", markerfacecolor="#2a78d6", markersize=8, label="detector, inside range"),
+                               Line2D([0], [0], marker="D", color="w", markerfacecolor="#2a78d6", markersize=7, label="detector, outside range")],
+                      frameon=False, fontsize=8.5, loc="upper left")
+    fig.tight_layout()
+    return fig
+
+
+if not EV_RESULTS:
+    print("No evaluation results yet. Run V1 to V11 first.")
+else:
+    _html_out = ev_dashboard_html()
+    display(HTML(_html_out))
+    with open(os.path.join(EV_DIR, "evaluation_dashboard.html"), "w") as f:
+        f.write("<!doctype html><meta charset='utf-8'><title>System evaluation</title><body style='margin:24px;background:#fff'>"
+                + _html_out + "</body>")
+    _fig = ev_dashboard_figure()
+    if _fig is not None:
+        _fig.savefig(os.path.join(EV_DIR, "evaluation_evidence.png"), dpi=150, bbox_inches="tight")
+        plt.show()
+    print("Saved evaluation_dashboard.html and evaluation_evidence.png to", EV_DIR)
+
+
+# ====================================================================================================
+# notebook cell 100: E4 · Outputs: interactive map, tables and charts
 # ====================================================================================================
 #@title E4 · Outputs: interactive map, tables and charts
 import folium
@@ -6995,7 +7238,7 @@ def alerts_df(case):
 
 def export_outputs():
     """Write every Colab output (shared case state, evidence, exceptions, scores, scenarios, decisions, outcomes, audit, rules, map)."""
-    ts = utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = local_now().strftime("%Y%m%dT%H%M%S%Z")
     path = os.path.join(OUTPUT_DIR, f"transit_dashboard_outputs_{ts}.zip")
     cases = list(APP.cases.values())
     ev, ex, sc, op, dc, oc = [], [], [], [], [], []
@@ -7029,8 +7272,10 @@ def export_outputs():
     APP.log(None, "system", "system", "Export", "Outputs exported", path)
     return path
 
-
-# Sections C + D governance tables (used by the dashboard and by export_outputs)
+# ====================================================================================================
+# helpers kept from notebook cell 101: E5 · Gradio dashboard (human-in-the-loop)
+# ====================================================================================================
+# ---- Sections C + D helpers for tab 8
 def eth_summary_md():
     t = eth_team_summary()
     return (f"**Roster:** {t['total']} people · compliance rate **{t['compliance_rate_pct']}%** (COMPLIANT + AT_RISK) · "
@@ -7069,7 +7314,6 @@ def b_audit_df():
     except NameError:
         df = None
     return ph(df, "No Section B notebook-form cases yet")
-
 
 # ---- end of notebook cells ----
 import matplotlib.pyplot as _plt

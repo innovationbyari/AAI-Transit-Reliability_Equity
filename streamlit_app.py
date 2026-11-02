@@ -9,10 +9,33 @@ Run locally:  streamlit run streamlit_app.py
 import importlib
 import io
 import json
+import os
 import sys
+import types
+
+import streamlit as st
+
+# The engine lives in the transit_ai/ folder. If the files were uploaded without that folder (engine.py and
+# _ipython_shim.py next to this file), point the transit_ai package at this folder so the imports still work.
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+if (not os.path.isdir(os.path.join(_APP_DIR, "transit_ai"))
+        and os.path.exists(os.path.join(_APP_DIR, "engine.py")) and "transit_ai" not in sys.modules):
+    _pkg = types.ModuleType("transit_ai")
+    _pkg.__path__ = [_APP_DIR]
+    sys.modules["transit_ai"] = _pkg
+
+# The engine reads API keys from Colab Secrets or environment variables. On Streamlit Community Cloud the keys are in the
+# app's secrets, so copy them into the environment before the engine starts (values are never printed).
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, (str, int, float)) and str(_v).strip():
+            os.environ.setdefault(str(_k), str(_v).strip())
+except Exception:
+    pass
 
 import pandas as pd
-import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Transit Reliability & Equity", page_icon="🚌", layout="wide")

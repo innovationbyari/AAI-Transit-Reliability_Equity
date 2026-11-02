@@ -30,3 +30,7 @@ class HTML(_Rich):
 
 class Markdown(_Rich):
     pass
+
+
+class Image(_Rich):
+    pass

@@ -11,6 +11,7 @@ ipywidgets>=8.1                 # the notebook's form cells are imported (not di
 opencv-python-headless>=4.9,<5  # vision fallback detector; 5.0 removed the HOG people detector
 gtfs-realtime-bindings>=1.0     # NJ Transit GTFS-realtime parser
 protobuf>=5.29.1,<7
+tzdata                          # time-zone data for the Eastern Time timestamps (version 6)
 
 # Optional, heavy (left out because Streamlit Community Cloud apps have limited memory):
 #   torch + torchvision  → Faster R-CNN detector instead of the HOG fallback (much better counts)
